@@ -27,15 +27,22 @@ final class OfflineRoadMap {
     private static final int ZOOM = 14;
     private static final int WORLD = 1 << ZOOM;
     private static final int TILE_RADIUS = 2;
+    private static final String EXTERNAL_PACK = "hud-roads.db";
 
     static final class Region {
         final String name;
         final double latitude, longitude, south, west, north, east;
+        final boolean compactGeometry;
 
         Region(Map<String, String> metadata) {
             if (!String.valueOf(ZOOM).equals(metadata.get("zoom"))) {
                 throw new IllegalArgumentException("Unsupported offline map zoom");
             }
+            String encoding = metadata.getOrDefault("encoding", "float32");
+            if (!"float32".equals(encoding) && !"uint16".equals(encoding)) {
+                throw new IllegalArgumentException("Unsupported offline map geometry");
+            }
+            compactGeometry = "uint16".equals(encoding);
             name = metadata.get("name");
             latitude = number(metadata, "center_lat");
             longitude = number(metadata, "center_lon");
@@ -43,6 +50,10 @@ final class OfflineRoadMap {
             west = number(metadata, "west");
             north = number(metadata, "north");
             east = number(metadata, "east");
+            if (name == null || name.isEmpty() || !contains(latitude, longitude)
+                    || south < -85 || north > 85 || west < -180 || east > 180) {
+                throw new IllegalArgumentException("Invalid offline map bounds");
+            }
         }
 
         private static double number(Map<String, String> metadata, String key) {
@@ -78,6 +89,10 @@ final class OfflineRoadMap {
         boolean covers(double viewX, double viewY) {
             return Math.abs(viewX - x - 0.5) <= 1 && Math.abs(viewY - y - 0.5) <= 1;
         }
+
+        boolean hasRoads() {
+            return !roads[0].isEmpty() || !roads[1].isEmpty() || !roads[2].isEmpty();
+        }
     }
 
     private final Context context;
@@ -85,6 +100,7 @@ final class OfflineRoadMap {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private SQLiteDatabase database; // Owned by the worker.
+    private boolean compactGeometry;
     private boolean opening, closed, failed;
     private int requestedX = -1, requestedY = -1;
     private Region region;
@@ -113,12 +129,8 @@ final class OfflineRoadMap {
         opening = true;
         worker.execute(() -> {
             try {
-                database = openDatabase();
-                Map<String, String> metadata = new HashMap<>();
-                try (Cursor cursor = database.rawQuery("SELECT key, value FROM metadata", null)) {
-                    while (cursor.moveToNext()) metadata.put(cursor.getString(0), cursor.getString(1));
-                }
-                Region loaded = new Region(metadata);
+                Region loaded = openRegion();
+                compactGeometry = loaded.compactGeometry;
                 main.post(() -> {
                     if (closed) return;
                     region = loaded;
@@ -160,7 +172,44 @@ final class OfflineRoadMap {
         });
     }
 
-    private SQLiteDatabase openDatabase() throws IOException {
+    private Region openRegion() throws IOException {
+        File external = context.getExternalFilesDir(null);
+        if (external != null) {
+            File pack = new File(external, EXTERNAL_PACK);
+            if (pack.isFile()) {
+                try {
+                    return readRegion(pack);
+                } catch (RuntimeException invalid) {
+                    Log.w(TAG, "Using bundled roads because the installed map pack could not be opened", invalid);
+                }
+            }
+        }
+        return readRegion(bundledPack());
+    }
+
+    private Region readRegion(File file) {
+        SQLiteDatabase candidate = SQLiteDatabase.openDatabase(file.getPath(), null, SQLiteDatabase.OPEN_READONLY);
+        try {
+            Map<String, String> metadata = new HashMap<>();
+            try (Cursor cursor = candidate.rawQuery("SELECT key, value FROM metadata", null)) {
+                while (cursor.moveToNext()) metadata.put(cursor.getString(0), cursor.getString(1));
+            }
+            try (Cursor roads = candidate.rawQuery("SELECT x, y, kind, geometry FROM roads LIMIT 0", null);
+                 Cursor labels = candidate.rawQuery(
+                         "SELECT x, y, name, offset_x, offset_y, kind FROM labels LIMIT 0", null)) {
+                roads.getColumnCount();
+                labels.getColumnCount();
+            }
+            Region loaded = new Region(metadata);
+            database = candidate;
+            return loaded;
+        } catch (RuntimeException error) {
+            candidate.close();
+            throw error;
+        }
+    }
+
+    private File bundledPack() throws IOException {
         File file = new File(context.getFilesDir(), "albany-roads-v1.db");
         if (!file.isFile()) {
             AtomicFile target = new AtomicFile(file);
@@ -176,7 +225,7 @@ final class OfflineRoadMap {
                 }
             }
         }
-        return SQLiteDatabase.openDatabase(file.getPath(), null, SQLiteDatabase.OPEN_READONLY);
+        return file;
     }
 
     private Scene readScene(int x, int y) {
@@ -190,9 +239,10 @@ final class OfflineRoadMap {
                 int dy = cursor.getInt(1) - y;
                 Path path = result.roads[cursor.getInt(2)];
                 ByteBuffer geometry = ByteBuffer.wrap(cursor.getBlob(3)).order(ByteOrder.LITTLE_ENDIAN);
-                while (geometry.remaining() >= 16) {
-                    path.moveTo(dx + geometry.getFloat(), dy + geometry.getFloat());
-                    path.lineTo(dx + geometry.getFloat(), dy + geometry.getFloat());
+                int segmentBytes = compactGeometry ? 8 : 16;
+                while (geometry.remaining() >= segmentBytes) {
+                    path.moveTo(dx + readOffset(geometry), dy + readOffset(geometry));
+                    path.lineTo(dx + readOffset(geometry), dy + readOffset(geometry));
                 }
             }
         }
@@ -205,6 +255,10 @@ final class OfflineRoadMap {
             }
         }
         return result;
+    }
+
+    private float readOffset(ByteBuffer geometry) {
+        return compactGeometry ? (geometry.getShort() & 0xffff) / 65535f : geometry.getFloat();
     }
 
     void close() {

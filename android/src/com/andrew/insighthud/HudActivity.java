@@ -1047,6 +1047,11 @@ public final class HudActivity extends Activity {
                         MAP_CENTER_X, MAP_CENTER_Y, 19, MUTED, false, Paint.Align.CENTER);
                 return;
             }
+            if (!scene.hasRoads()) {
+                text(canvas, "NO OFFLINE ROADS HERE", MAP_CENTER_X, MAP_CENTER_Y,
+                        19, MUTED, false, Paint.Align.CENTER);
+                return;
+            }
             float anchorY = MAP_CENTER_Y + FORWARD_OFFSET * cameraLead;
             setMapTransform((float) (viewX - scene.x), (float) (viewY - scene.y),
                     MAP_TILE_PIXELS, MAP_CENTER_X, anchorY);

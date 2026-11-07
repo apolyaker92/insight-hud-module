@@ -21,7 +21,11 @@ Run `./android/build.ps1 -SdkDirectory <path> -BuildDirectory ./work/hud-build` 
 
 ## Offline road data
 
-The included Albany road database is derived from [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright) and available under the [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/). It covers 42.49°–42.85° N and 74.03°–73.49° W. The database metadata records the source snapshot date.
+The included Albany road database and optional East Coast road pack are derived from [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright) and available under the [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/). The bundled Albany fallback covers 42.49°–42.85° N and 74.03°–73.49° W.
+
+The East Coast pack covers the 14 Atlantic coastal states from Maine through Florida, plus Vermont, Pennsylvania, and Washington, DC. Copy the pack into the app's external files directory as `hud-roads.db` and relaunch the HUD. On the PH-1 the directory is `/sdcard/Android/data/com.andrew.insighthud/files/`. The pack is separate from the APK and repository. The metadata records its source snapshot and extracts.
+
+Use `android/pack_pbf_roads.py` with Pyosmium to convert one [Geofabrik PBF extract](https://download.geofabrik.de/north-america/us.html) at a time. Run it again with `--merge` and the converted databases to build a combined road pack. Pass `--name` and choose a default view with `--center LAT LON`.
 
 Use `android/pack_roads.py` to turn an Overpass JSON road export with `out geom` into an indexed road database. Pass `--bounds S W N E --center LAT LON --name NAME`. When bundling a new database in the APK, update the copied database filename in `OfflineRoadMap.java` so existing installs pick up the new pack.
 
