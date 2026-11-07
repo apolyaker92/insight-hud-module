@@ -76,7 +76,7 @@ final class OfflineRoadMap {
         }
 
         boolean covers(double viewX, double viewY) {
-            return Math.abs(viewX - x - 0.5) <= 1.5 && Math.abs(viewY - y - 0.5) <= 1.5;
+            return Math.abs(viewX - x - 0.5) <= 1 && Math.abs(viewY - y - 0.5) <= 1;
         }
     }
 

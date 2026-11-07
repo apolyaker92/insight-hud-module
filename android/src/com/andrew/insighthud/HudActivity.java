@@ -35,11 +35,17 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.MotionEvent;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.text.DateFormat;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /** Dedicated HUD launcher with classic Bluetooth OBD and an explicitly labeled display preview. */
 public final class HudActivity extends Activity {
@@ -49,6 +55,12 @@ public final class HudActivity extends Activity {
     private boolean demo;
     private boolean mapPreview;
     private boolean headingUp;
+    private int mapRange;
+    private static final String[] RANGE_NAMES = {"NORMAL", "WIDE", "CLOSE"};
+    private static final float[] RANGE_ZOOM = {1f, 0.8f, 1.32f};
+    private TripStats trip = new TripStats();
+    private JSONObject shutdownReport;
+    private long accessoryLostAt;
     private long mapPreviewStartedAt;
     private OfflineRoadMap roadMap;
     private LocationManager locationManager;
@@ -73,6 +85,7 @@ public final class HudActivity extends Activity {
     private static final long STARTUP_DURATION_MS = 2800;
     private static final long POWER_LOSS_DELAY_MS = 3000;
     private static final long SHUTDOWN_DURATION_MS = 1200;
+    private static final long TRIP_REPORT_MS = 4200;
     private final Handler main = new Handler(Looper.getMainLooper());
     private BluetoothAdapter bluetooth;
     private ObdBluetooth obd;
@@ -152,6 +165,7 @@ public final class HudActivity extends Activity {
         dim = preferences.getBoolean("dim", false);
         mapPreview = preferences.getBoolean("mapPreview", false);
         headingUp = preferences.getBoolean("headingUp", false);
+        mapRange = Math.max(0, Math.min(RANGE_NAMES.length - 1, preferences.getInt("mapRange", 0)));
         mapPreviewStartedAt = SystemClock.uptimeMillis();
         getWindow().setNavigationBarColor(Color.BLACK);
         getWindow().setStatusBarColor(Color.BLACK);
@@ -178,6 +192,7 @@ public final class HudActivity extends Activity {
             boolean plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
             if (state != null && plugged && state.getBoolean("accessoryActive")) {
                 powerKnown = powered = accessoryActive = true;
+                trip.restore(state.getBundle("trip"));
                 updateScreenPower();
             }
             batteryReceiver.onReceive(this, battery);
@@ -219,6 +234,7 @@ public final class HudActivity extends Activity {
         if (plugged && !accessoryActive) {
             main.removeCallbacks(finishShutdown);
             accessoryActive = true;
+            shutdownReport = null;
             shutdownStartedAt = 0;
             parkedBlank = false;
             startupPending = true;
@@ -227,6 +243,7 @@ public final class HudActivity extends Activity {
             if (foreground) connectSavedAdapter();
             updateMap();
         } else if (!plugged && accessoryActive) {
+            accessoryLostAt = SystemClock.elapsedRealtime();
             main.postDelayed(confirmPowerLoss, POWER_LOSS_DELAY_MS);
         }
     }
@@ -243,6 +260,13 @@ public final class HudActivity extends Activity {
 
     private void parkHud() {
         accessoryActive = false;
+        shutdownReport = trip.finish(accessoryLostAt, System.currentTimeMillis());
+        trip = new TripStats();
+        if (shutdownReport != null) {
+            saveTrip(shutdownReport);
+        } else if (demo) {
+            shutdownReport = TripStats.report(0, 1246, 12.4, 3470, 189);
+        }
         startupPending = false;
         startupStartedAt = 0;
         releaseStartupSound();
@@ -251,11 +275,53 @@ public final class HudActivity extends Activity {
         updateMap();
         if (foreground && getSystemService(PowerManager.class).isInteractive()) {
             shutdownStartedAt = SystemClock.uptimeMillis();
-            main.postDelayed(finishShutdown, SHUTDOWN_DURATION_MS);
+            main.postDelayed(finishShutdown, shutdownDuration());
         } else {
             blankParkedHud();
         }
         hud.invalidate();
+    }
+
+    private long shutdownDuration() {
+        return shutdownReport == null ? SHUTDOWN_DURATION_MS : TRIP_REPORT_MS;
+    }
+
+    private JSONArray tripHistory() {
+        try {
+            return new JSONArray(preferences.getString("tripLog", "[]"));
+        } catch (JSONException invalid) {
+            return new JSONArray();
+        }
+    }
+
+    private void saveTrip(JSONObject report) {
+        JSONArray previous = tripHistory();
+        JSONArray recent = new JSONArray().put(report);
+        for (int index = 0; index < Math.min(previous.length(), 29); index++) {
+            JSONObject item = previous.optJSONObject(index);
+            if (item != null) recent.put(item);
+        }
+        preferences.edit().putString("tripLog", recent.toString()).apply();
+    }
+
+    private void showTripHistory() {
+        if (readings != null && readings.speedMph != null && readings.speedMph > 0) return;
+        JSONArray history = tripHistory();
+        DateFormat date = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT);
+        List<String> entries = new ArrayList<>();
+        for (int index = 0; index < history.length(); index++) {
+            JSONObject report = history.optJSONObject(index);
+            if (report == null) continue;
+            entries.add(date.format(new Date(report.optLong("ended"))) + "    " + TripStats.time(report)
+                    + "\n" + TripStats.value(report, "miles", "%.1f") + " est. mi    "
+                    + TripStats.value(report, "rpm", "%.0f") + " peak rpm    "
+                    + TripStats.value(report, "coolant", "%.0f") + " °F peak coolant");
+        }
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("TRIP LOG")
+                .setPositiveButton("CLOSE", null);
+        if (entries.isEmpty()) dialog.setMessage("Completed drives with live OBD data will appear here.");
+        else dialog.setItems(entries.toArray(new String[0]), null);
+        dialog.show();
     }
 
     private void blankParkedHud() {
@@ -398,10 +464,12 @@ public final class HudActivity extends Activity {
     private void updateReadings(ObdBluetooth.Readings update) {
         readings = update;
         if (update == null) {
+            trip.disconnect();
             rpmNext = 0;
             rpmCount = 0;
             return;
         }
+        if (accessoryActive && powered && !demo) trip.sample(update, SystemClock.elapsedRealtime());
         rpmHistory[rpmNext] = update.rpm == null ? Float.NaN : update.rpm.floatValue();
         rpmNext = (rpmNext + 1) % rpmHistory.length;
         rpmCount = Math.min(rpmCount + 1, rpmHistory.length);
@@ -491,6 +559,7 @@ public final class HudActivity extends Activity {
         state.putBoolean("accessoryActive", accessoryActive);
         state.putBoolean("startupPending", startupPending);
         state.putBoolean("parkedBlank", parkedBlank || shutdownStartedAt != 0);
+        state.putBundle("trip", trip.save());
         super.onSaveInstanceState(state);
     }
 
@@ -512,6 +581,23 @@ public final class HudActivity extends Activity {
         WindowManager.LayoutParams attributes = getWindow().getAttributes();
         attributes.screenBrightness = dim ? 0.08f : WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
         getWindow().setAttributes(attributes);
+    }
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        int control;
+        switch (event.getKeyCode()) {
+            case KeyEvent.KEYCODE_F1: control = 4; break;
+            case KeyEvent.KEYCODE_F2: control = 6; break;
+            case KeyEvent.KEYCODE_F3: control = 7; break;
+            case KeyEvent.KEYCODE_F4: control = 2; break;
+            default: return super.dispatchKeyEvent(event);
+        }
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
+                && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0
+                && (startupStartedAt == 0 || SystemClock.uptimeMillis() - startupStartedAt >= STARTUP_DURATION_MS)) {
+            activateControl(control);
+        }
+        return true;
     }
 
     private void activateControl(int control) {
@@ -547,6 +633,13 @@ public final class HudActivity extends Activity {
                 headingUp = !headingUp;
                 preferences.edit().putBoolean("headingUp", headingUp).apply();
                 break;
+            case 7:
+                mapRange = (mapRange + 1) % RANGE_NAMES.length;
+                preferences.edit().putInt("mapRange", mapRange).apply();
+                break;
+            case 8:
+                showTripHistory();
+                break;
             default:
                 return;
         }
@@ -570,6 +663,7 @@ public final class HudActivity extends Activity {
         private static final float MAP_CENTER_Y = (MAP_TOP + MAP_BOTTOM) / 2;
         private static final float MAP_TILE_PIXELS = 350;
         private static final float MAP_MODE_LEFT = 1092;
+        private static final float MAP_RANGE_LEFT = 985;
         private static final float FORWARD_OFFSET = 82;
         private static final int MAP_LOCK_MS = 150;
         private static final int MAP_TRANSITION_MS = 800;
@@ -586,6 +680,10 @@ public final class HudActivity extends Activity {
         private long cameraStartedAt;
         private int cameraDuration;
         private boolean cameraMode;
+        private float rangeZoom = RANGE_ZOOM[mapRange];
+        private float rangeFrom = rangeZoom;
+        private float rangeTo = rangeZoom;
+        private long rangeStartedAt;
         private final Path sampleLoop = road(106, 258, 150, 225, 190, 155, 260, 131,
                 340, 131, 380, 166, 416, 224, 384, 263, 315, 279, 205, 270, 106, 258);
         private final PathMeasure sampleDrive = new PathMeasure(sampleLoop, false);
@@ -655,7 +753,7 @@ public final class HudActivity extends Activity {
             canvas.restore();
             if ((starting || shuttingDown) && isShown()) postInvalidateDelayed(80);
             else if (mapPreview && foreground && hasWindowFocus()) {
-                if (now - cameraStartedAt < cameraDuration) postInvalidateDelayed(32);
+                if (now - cameraStartedAt < cameraDuration || now - rangeStartedAt < 500) postInvalidateDelayed(32);
                 else if (demo && powered) postInvalidateDelayed(100);
             }
         }
@@ -664,14 +762,29 @@ public final class HudActivity extends Activity {
             border(canvas, 40, 34, 1240, 552);
             text(canvas, "INSIGHT / HUD MODULE 2.3", 60, 69, 17, MUTED, false);
             line(canvas, 40, 88, 1240, 88, LINE);
-            text(canvas, "ACCESSORY POWER OFF", 640, 270, 42, AMBER, true, Paint.Align.CENTER);
-            text(canvas, "HUD STANDBY", 640, 325, 24, MUTED, false, Paint.Align.CENTER);
-            int litBlocks = 40 - (int) (elapsed * 40 / SHUTDOWN_DURATION_MS);
+            if (shutdownReport == null) {
+                text(canvas, "ACCESSORY POWER OFF", 640, 270, 42, AMBER, true, Paint.Align.CENTER);
+                text(canvas, "HUD STANDBY", 640, 325, 24, MUTED, false, Paint.Align.CENTER);
+            } else {
+                text(canvas, shutdownReport.optLong("ended") == 0 ? "TRIP REPORT / DEMO" : "TRIP REPORT / SAVED",
+                        640, 171, 35, AMBER, true, Paint.Align.CENTER);
+                reportMetric(canvas, 210, "ELAPSED", TripStats.time(shutdownReport));
+                reportMetric(canvas, 495, "EST. MILES", TripStats.value(shutdownReport, "miles", "%.1f"));
+                reportMetric(canvas, 785, "PEAK RPM", TripStats.value(shutdownReport, "rpm", "%.0f"));
+                reportMetric(canvas, 1070, "PEAK COOLANT", TripStats.value(shutdownReport, "coolant", "%.0f") + " °F");
+                text(canvas, "ACCESSORY POWER OFF / HUD STANDBY", 640, 415, 16, MUTED, false, Paint.Align.CENTER);
+            }
+            int litBlocks = 40 - (int) (elapsed * 40 / shutdownDuration());
             for (int index = 0; index < 40; index++) {
                 paint.setColor(index < litBlocks ? AMBER : UNLIT);
                 rectangle.set(65 + index * 29, 481, 85 + index * 29, 496);
                 canvas.drawRect(rectangle, paint);
             }
+        }
+
+        private void reportMetric(Canvas canvas, int x, String name, String value) {
+            text(canvas, name, x, 258, 17, MUTED, false, Paint.Align.CENTER);
+            text(canvas, value, x, 320, 35, AMBER, true, Paint.Align.CENTER);
         }
 
         private void drawStartup(Canvas canvas, long elapsed) {
@@ -754,10 +867,25 @@ public final class HudActivity extends Activity {
             String adapterName = preferences.getString("adapterName", "NO ADAPTER SELECTED");
             if (adapterName.length() > 28) adapterName = adapterName.substring(0, 28);
             text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, 536, 12, MUTED, false);
+            border(canvas, 335, 495, 460, 537);
+            text(canvas, "TRIP LOG", 397.5f, 522, 14, AMBER, false, Paint.Align.CENTER);
+            drawWarmup(canvas, displayed.coolantF);
             String phoneState = (battery < 0 ? "--" : String.valueOf(battery)) + "%  /  "
                     + Math.round(batteryTemperature) + " C";
             text(canvas, "PHONE " + phoneState, 1220, 511, 14, MUTED, false, Paint.Align.RIGHT);
             text(canvas, powered ? "EXT POWER" : "BATTERY POWER", 1220, 536, 12, MUTED, false, Paint.Align.RIGHT);
+        }
+
+        private void drawWarmup(Canvas canvas, Double coolant) {
+            text(canvas, "COOLANT WARM-UP", 495, 506, 12, MUTED, false);
+            text(canvas, wholeReading(coolant, "--") + " °F", 826, 506, 13, AMBER, false, Paint.Align.RIGHT);
+            // This is a display scale, not an engine warning threshold.
+            int lit = coolant == null ? 0 : Math.max(0, (int) Math.round((coolant - 100) / 90 * 12));
+            for (int index = 0; index < 12; index++) {
+                paint.setColor(index < lit ? AMBER : UNLIT);
+                float x = 495 + 28 * index;
+                canvas.drawRect(x, 515, x + 23, 530, paint);
+            }
         }
 
         private Path road(float... points) {
@@ -770,6 +898,9 @@ public final class HudActivity extends Activity {
         }
 
         private void drawMapMode(Canvas canvas) {
+            border(canvas, MAP_RANGE_LEFT, 96, MAP_MODE_LEFT - 8, 124);
+            text(canvas, RANGE_NAMES[mapRange], (MAP_RANGE_LEFT + MAP_MODE_LEFT - 8) / 2,
+                    115, 13, AMBER, false, Paint.Align.CENTER);
             border(canvas, MAP_MODE_LEFT, 96, MAP_RIGHT, 124);
             text(canvas, headingUp ? "HEADING UP" : "NORTH UP", (MAP_MODE_LEFT + MAP_RIGHT) / 2,
                     115, 13, AMBER, false, Paint.Align.CENTER);
@@ -780,6 +911,14 @@ public final class HudActivity extends Activity {
         }
 
         private void updateMapCamera(long now, float course) {
+            float rangeProgress = Math.min(1, (now - rangeStartedAt) / 500f);
+            float rangeEase = rangeProgress * rangeProgress * (3 - 2 * rangeProgress);
+            rangeZoom = rangeFrom + (rangeTo - rangeFrom) * rangeEase;
+            if (rangeTo != RANGE_ZOOM[mapRange]) {
+                rangeFrom = rangeZoom;
+                rangeTo = RANGE_ZOOM[mapRange];
+                rangeStartedAt = now;
+            }
             sampleMapCamera(now);
             boolean modeChanged = cameraMode != headingUp;
             if (!modeChanged && cameraDuration == MAP_TRANSITION_MS
@@ -808,7 +947,7 @@ public final class HudActivity extends Activity {
         }
 
         private void setMapTransform(float x, float y, float pixelsPerUnit, float anchorX, float anchorY) {
-            float zoom = 1 + cameraLead * 0.23f;
+            float zoom = rangeZoom * (1 + cameraLead * 0.23f);
             mapTransform.setTranslate(-x, -y);
             mapTransform.postScale(pixelsPerUnit * zoom, pixelsPerUnit * zoom);
             mapTransform.postRotate(cameraAngle);
@@ -817,7 +956,7 @@ public final class HudActivity extends Activity {
 
         private void drawMapPreview(Canvas canvas, long now) {
             text(canvas, "03  MOVING MAP", MAP_LEFT, 118, 19, AMBER, false);
-            text(canvas, "SIMULATED", MAP_MODE_LEFT - 12, 118, 14, MUTED, false, Paint.Align.RIGHT);
+            text(canvas, "SIMULATED", MAP_RANGE_LEFT - 12, 118, 14, MUTED, false, Paint.Align.RIGHT);
             drawMapMode(canvas);
             border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
             float progress = (now - mapPreviewStartedAt) % 24000 / 24000f;
@@ -866,7 +1005,7 @@ public final class HudActivity extends Activity {
             OfflineRoadMap.Region region = roadMap.region();
             text(canvas, "03  OFFLINE MAP", MAP_LEFT, 118, 19, AMBER, false);
             text(canvas, region == null ? "ALBANY REGION" : region.name,
-                    MAP_MODE_LEFT - 12, 118, 14, MUTED, false, Paint.Align.RIGHT);
+                    MAP_RANGE_LEFT - 12, 118, 11, MUTED, false, Paint.Align.RIGHT);
             drawMapMode(canvas);
             border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
             text(canvas, "© OpenStreetMap contributors", MAP_LEFT, 469, 12, MUTED, false);
@@ -899,7 +1038,7 @@ public final class HudActivity extends Activity {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setColor(LINE);
-            float strokeScale = MAP_TILE_PIXELS * (1 + cameraLead * 0.23f);
+            float strokeScale = MAP_TILE_PIXELS * rangeZoom * (1 + cameraLead * 0.23f);
             paint.setStrokeWidth(1.2f / strokeScale);
             canvas.drawPath(scene.roads[0], paint);
             paint.setColor(MUTED);
@@ -1156,6 +1295,9 @@ public final class HudActivity extends Activity {
             float x = (screenX - left) / scale;
             float y = (screenY - top) / scale;
             float mapX = mirror ? 1280 - x : x;
+            if (mapX >= 335 && mapX <= 460 && y >= 495 && y <= 537) return 8;
+            if (mapPreview && mapX >= MAP_RANGE_LEFT && mapX <= MAP_MODE_LEFT - 8
+                    && y >= 88 && y < MAP_TOP) return 7;
             if (mapPreview && mapX >= MAP_MODE_LEFT - 7 && mapX <= MAP_RIGHT + 4
                     && y >= 88 && y < MAP_TOP) return 6;
             if (mapPreview && !demo && mapX >= MAP_LEFT && mapX <= MAP_RIGHT
