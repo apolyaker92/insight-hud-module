@@ -83,6 +83,16 @@ public final class HudActivity extends Activity {
     private boolean parkedBlank;
     private int battery = -1;
     private float batteryTemperature;
+    private boolean batteryOverheat;
+    private PowerManager.OnThermalStatusChangedListener thermalListener;
+    private int systemThermalStatus;
+    private int thermalLevel;
+    private boolean thermalBlank;
+    private long thermalStartedAt;
+    private static final int THERMAL_NORMAL = 0;
+    private static final int THERMAL_LIMIT = 1;
+    private static final int THERMAL_HOLD = 2;
+    private static final long THERMAL_WARNING_MS = 4500;
     private long startupStartedAt;
     private long shutdownStartedAt;
     private MediaPlayer startupSound;
@@ -107,6 +117,11 @@ public final class HudActivity extends Activity {
     private boolean foreground;
     private final Runnable confirmPowerLoss = this::parkHud;
     private final Runnable finishShutdown = this::blankParkedHud;
+    private final Runnable finishThermalWarning = () -> {
+        thermalBlank = true;
+        updateScreenPower();
+        hud.invalidate();
+    };
     private final Runnable finishGpsTest = () -> {
         setGpsTest(false);
         updateMap();
@@ -163,6 +178,9 @@ public final class HudActivity extends Activity {
             int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
             battery = level >= 0 && scale > 0 ? Math.round(level * 100f / scale) : -1;
             batteryTemperature = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10f;
+            batteryOverheat = intent.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN)
+                    == BatteryManager.BATTERY_HEALTH_OVERHEAT;
+            updateThermalProtection();
             updateAccessoryPower(intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0);
             hud.invalidate();
         }
@@ -220,6 +238,16 @@ public final class HudActivity extends Activity {
             }
             batteryReceiver.onReceive(this, battery);
         }
+        if (Build.VERSION.SDK_INT >= 29) {
+            PowerManager power = getSystemService(PowerManager.class);
+            thermalListener = status -> {
+                systemThermalStatus = status;
+                updateThermalProtection();
+            };
+            power.addThermalStatusListener(getMainExecutor(), thermalListener);
+            systemThermalStatus = power.getCurrentThermalStatus();
+            updateThermalProtection();
+        }
         applyBrightness();
         hideSystemBars();
     }
@@ -235,6 +263,9 @@ public final class HudActivity extends Activity {
 
     @Override protected void onDestroy() {
         main.removeCallbacksAndMessages(null);
+        if (Build.VERSION.SDK_INT >= 29 && thermalListener != null) {
+            getSystemService(PowerManager.class).removeThermalStatusListener(thermalListener);
+        }
         if (obd != null) obd.destroy();
         switchSounds.release();
         switchSounds = null;
@@ -274,13 +305,45 @@ public final class HudActivity extends Activity {
     }
 
     private void startTripAnimation() {
-        if (startupPending && foreground && hasWindowFocus()
+        if (thermalLevel != THERMAL_HOLD && startupPending && foreground && hasWindowFocus()
                 && getSystemService(PowerManager.class).isInteractive()) {
             startupPending = false;
             releaseStartupSound();
             playStartupSound();
             hud.invalidate();
         }
+    }
+
+    private void updateThermalProtection() {
+        boolean severe = systemThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE;
+        boolean critical = systemThermalStatus >= PowerManager.THERMAL_STATUS_CRITICAL;
+        int next;
+        if (batteryOverheat || critical || batteryTemperature >= 46
+                || (thermalLevel == THERMAL_HOLD && (severe || batteryTemperature > 40))) {
+            next = THERMAL_HOLD;
+        } else if (severe || batteryTemperature >= 42
+                || (thermalLevel != THERMAL_NORMAL && batteryTemperature > 39)) {
+            next = THERMAL_LIMIT;
+        } else {
+            next = THERMAL_NORMAL;
+        }
+        if (next == thermalLevel) return;
+        boolean reconnect = thermalLevel == THERMAL_HOLD || next == THERMAL_HOLD;
+        thermalLevel = next;
+        thermalBlank = false;
+        thermalStartedAt = SystemClock.uptimeMillis();
+        main.removeCallbacks(finishThermalWarning);
+        if (next == THERMAL_HOLD) {
+            startupStartedAt = 0;
+            releaseStartupSound();
+            main.postDelayed(finishThermalWarning, THERMAL_WARNING_MS);
+        }
+        if (reconnect) connectSavedAdapter();
+        updateMap();
+        applyBrightness();
+        updateScreenPower();
+        startTripAnimation();
+        hud.invalidate();
     }
 
     private void parkHud() {
@@ -430,7 +493,7 @@ public final class HudActivity extends Activity {
     }
 
     private void updateMap() {
-        boolean liveMap = foreground && mapPreview && !demo;
+        boolean liveMap = foreground && mapPreview && !demo && thermalLevel == THERMAL_NORMAL;
         if (gpsTestActive && (!liveMap || accessoryActive)) setGpsTest(false);
         if (liveMap) {
             roadMap.open();
@@ -470,7 +533,7 @@ public final class HudActivity extends Activity {
 
     private void refreshMapTiles() {
         OfflineRoadMap.Region region = roadMap.region();
-        if (!foreground || !mapPreview || demo || region == null) return;
+        if (!foreground || !mapPreview || demo || region == null || thermalLevel != THERMAL_NORMAL) return;
         Location position = mapPosition(region);
         roadMap.request(OfflineRoadMap.tileX(position == null ? region.longitude : position.getLongitude()),
                 OfflineRoadMap.tileY(position == null ? region.latitude : position.getLatitude()));
@@ -489,7 +552,8 @@ public final class HudActivity extends Activity {
         updateReadings(null);
         if (obd != null) obd.stop();
         String address = preferences.getString("adapterAddress", "");
-        if (bluetooth == null) linkStatus = "BLUETOOTH UNAVAILABLE";
+        if (thermalLevel == THERMAL_HOLD) linkStatus = "THERMAL HOLD";
+        else if (bluetooth == null) linkStatus = "BLUETOOTH UNAVAILABLE";
         else if (demo) linkStatus = "DEMO ACTIVE";
         else if (!accessoryActive) linkStatus = "ACCESSORY OFF";
         else if (!hasBluetoothPermission()) linkStatus = "BT PERMISSION NEEDED";
@@ -611,7 +675,7 @@ public final class HudActivity extends Activity {
     }
 
     private void updateScreenPower() {
-        boolean drivingDisplay = accessoryActive || shutdownStartedAt != 0;
+        boolean drivingDisplay = !thermalBlank && (accessoryActive || shutdownStartedAt != 0);
         setShowWhenLocked(drivingDisplay);
         if (drivingDisplay || gpsTestActive) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -619,7 +683,9 @@ public final class HudActivity extends Activity {
 
     private void applyBrightness() {
         WindowManager.LayoutParams attributes = getWindow().getAttributes();
-        attributes.screenBrightness = dim ? 0.08f : WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+        attributes.screenBrightness = thermalLevel == THERMAL_HOLD ? 0.03f
+                : dim ? 0.08f
+                : thermalLevel == THERMAL_LIMIT ? 0.18f : WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
         getWindow().setAttributes(attributes);
     }
 
@@ -633,7 +699,7 @@ public final class HudActivity extends Activity {
             default: return super.dispatchKeyEvent(event);
         }
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
-                && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0
+                && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD
                 && (startupStartedAt == 0 || SystemClock.uptimeMillis() - startupStartedAt >= STARTUP_DURATION_MS)) {
             activateControl(control);
         }
@@ -771,7 +837,7 @@ public final class HudActivity extends Activity {
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            if (parkedBlank) {
+            if (parkedBlank || thermalBlank) {
                 canvas.drawColor(Color.BLACK);
                 return;
             }
@@ -788,18 +854,60 @@ public final class HudActivity extends Activity {
             long startupElapsed = now - startupStartedAt;
             boolean starting = startupStartedAt != 0 && startupElapsed < STARTUP_DURATION_MS;
             boolean shuttingDown = shutdownStartedAt != 0;
-            if (shuttingDown) drawShutdown(canvas, now - shutdownStartedAt);
+            boolean thermalHold = thermalLevel == THERMAL_HOLD;
+            if (thermalHold) drawThermalWarning(canvas, now);
+            else if (shuttingDown) drawShutdown(canvas, now - shutdownStartedAt);
             else if (starting) drawStartup(canvas, startupElapsed);
             else drawGauges(canvas, now);
             canvas.restore();
-            if (!starting && !shuttingDown) drawControls(canvas);
+            if (!starting && !shuttingDown && !thermalHold) drawControls(canvas);
             canvas.restore();
-            if ((starting || shuttingDown) && isShown()) postInvalidateDelayed(80);
-            else if (mapPreview && foreground && hasWindowFocus()) {
+            if ((thermalHold || starting || shuttingDown
+                    || (thermalLevel == THERMAL_LIMIT && now - thermalStartedAt < THERMAL_WARNING_MS))
+                    && isShown()) postInvalidateDelayed(80);
+            else if (thermalLevel == THERMAL_NORMAL && mapPreview && foreground && hasWindowFocus()) {
                 if (now - cameraStartedAt < cameraDuration || now - rangeStartedAt < 500
                         || (lockStartedAt != 0 && now - lockStartedAt < TARGET_CAPTION_MS)) postInvalidateDelayed(32);
                 else if (demo && powered) postInvalidateDelayed(100);
             }
+        }
+
+        private void drawThermalWarning(Canvas canvas, long now) {
+            border(canvas, 40, 34, 1240, 552);
+            text(canvas, "INSIGHT / HUD MODULE 2.3", 60, 69, 17, MUTED, false);
+            text(canvas, "THERMAL PROTECTION", 1220, 69, 17, AMBER, false, Paint.Align.RIGHT);
+            line(canvas, 40, 88, 1240, 88, LINE);
+            long elapsed = now - thermalStartedAt;
+            int color = elapsed % 1200 < 700 ? 0xFFFF8A45 : AMBER;
+            text(canvas, "OVERHEATING", 640, 254, 61, color, true, Paint.Align.CENTER);
+            text(canvas, "BATTERY " + Math.round(batteryTemperature) + " °C", 640, 307,
+                    25, AMBER, false, Paint.Align.CENTER);
+            text(canvas, "GPS AND OBD PAUSED", 640, 358, 18, MUTED, false, Paint.Align.CENTER);
+            drawThermalTicker(canvas, 330, 950, 422, elapsed, "COOL PHONE BEFORE USE   /   HUD ENTERING STANDBY");
+        }
+
+        private void drawThermalLimit(Canvas canvas, long now) {
+            text(canvas, "03  THERMAL LIMIT", MAP_LEFT, 118, 19, AMBER, false);
+            border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
+            text(canvas, "PHONE RUNNING HOT", MAP_CENTER_X, 235, 27, AMBER, true, Paint.Align.CENTER);
+            text(canvas, "BATTERY " + Math.round(batteryTemperature) + " °C", MAP_CENTER_X, 283,
+                    20, AMBER, false, Paint.Align.CENTER);
+            drawThermalTicker(canvas, 680, 1190, 351, now - thermalStartedAt, "GPS PAUSED   /   SCREEN DIMMED");
+        }
+
+        private void drawThermalTicker(Canvas canvas, float left, float right, float y, long elapsed, String message) {
+            line(canvas, left, y - 27, right, y - 27, LINE);
+            line(canvas, left, y + 12, right, y + 12, LINE);
+            canvas.save();
+            canvas.clipRect(left + 2, y - 26, right - 2, y + 11);
+            if (elapsed < THERMAL_WARNING_MS) {
+                float width = right - left;
+                float x = left + width * 0.47f - elapsed * 0.094f;
+                text(canvas, message, x, y, 16, AMBER, false);
+            } else {
+                text(canvas, message, (left + right) / 2, y, 16, AMBER, false, Paint.Align.CENTER);
+            }
+            canvas.restore();
         }
 
         private void drawShutdown(Canvas canvas, long elapsed) {
@@ -898,7 +1006,9 @@ public final class HudActivity extends Activity {
             drawRpmTrace(canvas, displayed.rpm);
 
             line(canvas, 620, 88, 620, 480, LINE);
-            if (mapPreview && demo) {
+            if (thermalLevel == THERMAL_LIMIT) {
+                drawThermalLimit(canvas, now);
+            } else if (mapPreview && demo) {
                 drawMapPreview(canvas, now);
             } else if (mapPreview) {
                 drawOfflineMap(canvas, now);
@@ -1381,11 +1491,11 @@ public final class HudActivity extends Activity {
             float y = (screenY - top) / scale;
             float mapX = mirror ? 1280 - x : x;
             if (mapX >= 1126 && mapX <= 1228 && y >= 39 && y <= 85) return 8;
-            if (mapPreview && mapX >= MAP_RANGE_LEFT && mapX <= MAP_MODE_LEFT - 8
+            if (thermalLevel == THERMAL_NORMAL && mapPreview && mapX >= MAP_RANGE_LEFT && mapX <= MAP_MODE_LEFT - 8
                     && y >= 88 && y < MAP_TOP) return 7;
-            if (mapPreview && mapX >= MAP_MODE_LEFT - 7 && mapX <= MAP_RIGHT + 4
+            if (thermalLevel == THERMAL_NORMAL && mapPreview && mapX >= MAP_MODE_LEFT - 7 && mapX <= MAP_RIGHT + 4
                     && y >= 88 && y < MAP_TOP) return 6;
-            if (mapPreview && !demo && mapX >= MAP_LEFT && mapX <= MAP_RIGHT
+            if (thermalLevel == THERMAL_NORMAL && mapPreview && !demo && mapX >= MAP_LEFT && mapX <= MAP_RIGHT
                     && y >= MAP_TOP && y <= 480
                     && (!hasPreciseLocation() || !gpsEnabled() || (!powered && !accessoryActive))) return 5;
             if (y < 570 || y > 620 || x < CONTROL_LEFT) return -1;
@@ -1395,7 +1505,7 @@ public final class HudActivity extends Activity {
         }
 
         @Override public boolean onTouchEvent(MotionEvent event) {
-            if (shutdownStartedAt != 0) return true;
+            if (shutdownStartedAt != 0 || thermalLevel == THERMAL_HOLD) return true;
             if (parkedBlank) {
                 if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                     parkedBlank = false;
