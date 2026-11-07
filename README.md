@@ -9,7 +9,7 @@ An Android HUD for a 2001 Honda Insight (ZE1), built for an Essential PH-1 runni
 - Pair a compatible classic Bluetooth OBD-II adapter in Android, then select it under BT SETUP in the HUD header. Demo mode can preview the dashboard without a connection.
 - Use MIRROR for a reflected display and DIM for night viewing.
 - Disable Android's charging sound if you want only the HUD chime. The HUD holds a fixed landscape orientation.
-- Use SHOW MAP for the Albany and East Greenbush offline map, or SHOW GAUGES to switch back. Tap the map to grant precise foreground location or open Android Location settings. The HUD requests GPS while the real map is visible and accessory power is on. DEMO uses a fictional map and simulated gauges.
+- Use SHOW MAP for the offline map, or SHOW GAUGES to switch back. Tap the map to grant precise foreground location or open Android Location settings. The HUD requests GPS while the real map is visible and accessory power is on. After 20 seconds without a usable fix it shows SAT NOT AVAILABLE over the map. DEMO uses a fictional map and simulated gauges.
 - Pair a Bluetooth keyboard or keypad and assign F1 to View, F2 to Heading, F3 to Range, and F4 to Dim. The map header also has touch controls for range and heading. During a heading transition, the target caption briefly shows the current coordinates, or simulated coordinates in Demo.
 - At accessory power-off, the HUD shows a trip report for a drive with live OBD readings. Open TRIP LOG while parked to see the latest 30 trips. Estimated mileage integrates nearby OBD speed samples and skips gaps. Demo reports are never saved.
 

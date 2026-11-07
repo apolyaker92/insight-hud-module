@@ -66,11 +66,14 @@ public final class HudActivity extends Activity {
     private OfflineRoadMap roadMap;
     private LocationManager locationManager;
     private Location gpsFix;
+    private Location lastMapFix;
     private float gpsCourse = Float.NaN;
     private boolean gpsRegistered;
+    private boolean gpsUnavailable;
     private boolean gpsTestActive;
     private static final int GPS_PERMISSION = 24;
     private static final long GPS_STALE_MS = 12000;
+    private static final long GPS_UNAVAILABLE_MS = 20000;
     private static final long GPS_TEST_MS = 5 * 60 * 1000;
     private boolean dim;
     private boolean powered;
@@ -115,11 +118,17 @@ public final class HudActivity extends Activity {
         refreshMapTiles();
         hud.invalidate();
     };
+    private final Runnable showGpsUnavailable = () -> {
+        gpsUnavailable = gpsRegistered && gpsEnabled();
+        hud.invalidate();
+    };
     private final LocationListener gpsListener = new LocationListener() {
         @Override public void onLocationChanged(Location location) {
             long age = (SystemClock.elapsedRealtimeNanos() - location.getElapsedRealtimeNanos()) / 1000000;
             if (!gpsRegistered || age >= GPS_STALE_MS || !location.hasAccuracy() || location.getAccuracy() > 100) return;
             gpsFix = location;
+            lastMapFix = location;
+            scheduleGpsAvailability(age);
             if (location.hasBearing() && location.hasSpeed() && location.getSpeed() >= 2f) {
                 gpsCourse = location.getBearing();
             }
@@ -130,11 +139,13 @@ public final class HudActivity extends Activity {
         }
 
         @Override public void onProviderDisabled(String provider) {
+            cancelGpsAvailability();
             main.removeCallbacks(expireGpsFix);
             expireGpsFix.run();
         }
 
         @Override public void onProviderEnabled(String provider) {
+            if (gpsRegistered) scheduleGpsAvailability(0);
             hud.invalidate();
         }
 
@@ -433,26 +444,41 @@ public final class HudActivity extends Activity {
                 locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0,
                         gpsListener, Looper.getMainLooper());
                 gpsRegistered = true;
+                if (gpsEnabled()) scheduleGpsAvailability(0);
             } catch (IllegalArgumentException | SecurityException unavailable) {
                 hud.invalidate();
             }
         } else {
             gpsRegistered = false;
             locationManager.removeUpdates(gpsListener);
+            cancelGpsAvailability();
             main.removeCallbacks(expireGpsFix);
             expireGpsFix.run();
             if (liveMap) refreshMapTiles();
         }
     }
 
+    private void scheduleGpsAvailability(long fixAge) {
+        cancelGpsAvailability();
+        main.postDelayed(showGpsUnavailable, GPS_UNAVAILABLE_MS - Math.max(0, fixAge));
+    }
+
+    private void cancelGpsAvailability() {
+        main.removeCallbacks(showGpsUnavailable);
+        gpsUnavailable = false;
+    }
+
     private void refreshMapTiles() {
         OfflineRoadMap.Region region = roadMap.region();
         if (!foreground || !mapPreview || demo || region == null) return;
-        if (fixInRegion(region)) {
-            roadMap.request(OfflineRoadMap.tileX(gpsFix.getLongitude()), OfflineRoadMap.tileY(gpsFix.getLatitude()));
-        } else {
-            roadMap.request(OfflineRoadMap.tileX(region.longitude), OfflineRoadMap.tileY(region.latitude));
-        }
+        Location position = mapPosition(region);
+        roadMap.request(OfflineRoadMap.tileX(position == null ? region.longitude : position.getLongitude()),
+                OfflineRoadMap.tileY(position == null ? region.latitude : position.getLatitude()));
+    }
+
+    private Location mapPosition(OfflineRoadMap.Region region) {
+        return lastMapFix != null && region.contains(lastMapFix.getLatitude(), lastMapFix.getLongitude())
+                ? lastMapFix : null;
     }
 
     private boolean fixInRegion(OfflineRoadMap.Region region) {
@@ -1039,8 +1065,9 @@ public final class HudActivity extends Activity {
             boolean tracking = fixInRegion(region);
             float course = tracking ? gpsCourse : Float.NaN;
             updateMapCamera(now, course);
-            double viewX = OfflineRoadMap.tileX(tracking ? gpsFix.getLongitude() : region.longitude);
-            double viewY = OfflineRoadMap.tileY(tracking ? gpsFix.getLatitude() : region.latitude);
+            Location position = mapPosition(region);
+            double viewX = OfflineRoadMap.tileX(position == null ? region.longitude : position.getLongitude());
+            double viewY = OfflineRoadMap.tileY(position == null ? region.latitude : position.getLatitude());
             OfflineRoadMap.Scene scene = roadMap.scene();
             if (scene == null || !scene.covers(viewX, viewY)) {
                 text(canvas, roadMap.failed() ? "MAP DATA UNAVAILABLE" : "LOADING LOCAL ROADS",
@@ -1111,12 +1138,24 @@ public final class HudActivity extends Activity {
             if (tracking) drawMapMarker(canvas, MAP_CENTER_X, anchorY, course, now,
                     gpsFix.getLatitude(), gpsFix.getLongitude());
             canvas.restore();
+            if (gpsUnavailable) drawSatelliteWarning(canvas);
+        }
+
+        private void drawSatelliteWarning(Canvas canvas) {
+            float left = MAP_CENTER_X - 174;
+            float top = MAP_CENTER_Y - 30;
+            paint.setColor(0xF2080602);
+            canvas.drawRect(left, top, left + 348, top + 60, paint);
+            border(canvas, left, top, left + 348, top + 60);
+            text(canvas, "SAT NOT AVAILABLE", MAP_CENTER_X, MAP_CENTER_Y + 7,
+                    24, AMBER, true, Paint.Align.CENTER);
         }
 
         private String mapStatus(OfflineRoadMap.Region region) {
             if (!hasPreciseLocation()) return "TAP MAP FOR GPS";
             if (!gpsEnabled()) return "TAP MAP TO ENABLE GPS";
             if (!accessoryActive && !gpsTestActive) return "TAP MAP FOR GPS TEST";
+            if (gpsUnavailable) return gpsTestActive ? "TEST / TAP TO STOP" : "";
             String status = gpsFix == null ? "ACQUIRING GPS"
                     : region != null && !fixInRegion(region) ? "OUTSIDE MAP AREA" : "GPS FIX";
             return gpsTestActive ? "TEST / " + status + " / TAP TO STOP" : status;
