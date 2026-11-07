@@ -46,31 +46,20 @@ final class ObdBluetooth {
         final Double intakeF;
         final Double voltage;
         final Double load;
-        /** IMA pack state of charge in percent, when a verified source supplies it. */
-        final Double imaCharge;
-        /** IMA pack current in amps: positive is assist, negative is regen. */
-        final Double imaAmps;
         final Double throttle;
         /** Estimated fuel flow in gallons per hour, and the estimated MPG derived from it. */
         final Double fuelGph;
         final Double mpg;
 
         Readings(Double speedMph, Double rpm, Double coolantF, Double intakeF, Double voltage, Double load) {
-            this(speedMph, rpm, coolantF, intakeF, voltage, load, null, null);
+            this(speedMph, rpm, coolantF, intakeF, voltage, load, null, null, null);
         }
 
         Readings(Double speedMph, Double rpm, Double coolantF, Double intakeF, Double voltage, Double load,
-                 Double imaCharge, Double imaAmps) {
-            this(speedMph, rpm, coolantF, intakeF, voltage, load, imaCharge, imaAmps, null, null, null);
-        }
-
-        Readings(Double speedMph, Double rpm, Double coolantF, Double intakeF, Double voltage, Double load,
-                 Double imaCharge, Double imaAmps, Double throttle, Double fuelGph, Double mpg) {
+                 Double throttle, Double fuelGph, Double mpg) {
             this.throttle = throttle;
             this.fuelGph = fuelGph;
             this.mpg = mpg;
-            this.imaCharge = imaCharge;
-            this.imaAmps = imaAmps;
             this.speedMph = speedMph;
             this.rpm = rpm;
             this.coolantF = coolantF;
@@ -249,7 +238,7 @@ final class ObdBluetooth {
             else emptyCycles = 0;
             if (emptyCycles >= 3) throw new IOException("ECU stopped responding");
             publish(session, session.address.equals(SimulatedElm.ADDRESS) ? "SIM LIVE" : "BT LIVE",
-                    new Readings(speed, rpm, coolant, intake, voltage, load, null, null, throttle, fuelGph, mpg));
+                    new Readings(speed, rpm, coolant, intake, voltage, load, throttle, fuelGph, mpg));
             Thread.sleep(1000);
         }
     }

@@ -119,7 +119,7 @@ public final class HudActivity extends Activity {
     private BluetoothAdapter bluetooth;
     private ObdBluetooth obd;
     private ObdBluetooth.Readings readings;
-    private static final ObdBluetooth.Readings DEMO_READINGS = new ObdBluetooth.Readings(46d, 2400d, 188d, 85d, 13.8d, 42d, 68d, 35d, 28d, 0.87d, 52d);
+    private static final ObdBluetooth.Readings DEMO_READINGS = new ObdBluetooth.Readings(46d, 2400d, 188d, 85d, 13.8d, 42d, 28d, 0.87d, 52d);
     private static final ObdBluetooth.Readings EMPTY_READINGS = new ObdBluetooth.Readings(null, null, null, null, null, null);
     private static final float[] DEMO_RPM = {820, 880, 1100, 1550, 2250, 3250, 4500, 5000, 3550, 2950,
             3050, 3450, 4200, 4700, 3150, 2680, 2530, 2420, 2450, 2400};
@@ -875,9 +875,9 @@ public final class HudActivity extends Activity {
         private static final float MAP_LEFT = 650;
         private static final float MAP_TOP = 131;
         private static final float MAP_RIGHT = 1220;
-        private static final float MAP_BOTTOM = 448;
+        private float mapBottom() { return 448 + extra(); }
         private static final float MAP_CENTER_X = (MAP_LEFT + MAP_RIGHT) / 2;
-        private static final float MAP_CENTER_Y = (MAP_TOP + MAP_BOTTOM) / 2;
+        private float mapCenterY() { return (MAP_TOP + mapBottom()) / 2; }
         private static final float MAP_TILE_PIXELS = 350;
         private static final float MAP_MODE_LEFT = 1092;
         private static final float MAP_RANGE_LEFT = 985;
@@ -1001,7 +1001,7 @@ public final class HudActivity extends Activity {
 
         private void drawThermalLimit(Canvas canvas, long now) {
             text(canvas, "03  THERMAL LIMIT", MAP_LEFT, 118, 19, AMBER, false);
-            border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
+            border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, mapBottom());
             text(canvas, "PHONE RUNNING HOT", MAP_CENTER_X, 235, 27, AMBER, true, Paint.Align.CENTER);
             text(canvas, "BATTERY " + Math.round(batteryTemperature) + " °C", MAP_CENTER_X, 283,
                     20, AMBER, false, Paint.Align.CENTER);
@@ -1130,10 +1130,8 @@ public final class HudActivity extends Activity {
                 drawMetrics(canvas, displayed);
             }
 
-            if (extra() > 0) drawImaStrip(canvas, displayed);
             line(canvas, 40, footer, 1240, footer, LINE);
             text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
-            if (extra() == 0) text(canvas, imaSummary(displayed), 640, footer + 31, 14, AMBER, false, Paint.Align.CENTER);
             String adapterName = preferences.getString("adapterName", "NO ADAPTER SELECTED");
             if (adapterName.length() > 28) adapterName = adapterName.substring(0, 28);
             text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 56, 12, MUTED, false);
@@ -1150,7 +1148,7 @@ public final class HudActivity extends Activity {
             for (int id = 0; id < 4 && slot < 3; id++) {
                 boolean show = demo || (anySeen ? seenGauge[id] : id < 3);
                 if (!show) continue;
-                float y = 126 + slot * 120;
+                float y = 126 + slot * (120 + extra() / 3);
                 switch (id) {
                     case 0: metric(canvas, "03  THROTTLE", reading.throttle, "%", y, 0, 100); break;
                     case 1: metric(canvas, "04  ENGINE LOAD", reading.load, "%", y, 0, 100); break;
@@ -1159,48 +1157,6 @@ public final class HudActivity extends Activity {
                 }
                 slot++;
             }
-        }
-
-        private String imaSummary(ObdBluetooth.Readings reading) {
-            if (reading.imaCharge == null) return "IMA --";
-            String flow = reading.imaAmps == null ? "" : reading.imaAmps >= 0 ? "  ASSIST " : "  REGEN ";
-            return "IMA " + Math.round(reading.imaCharge) + "%"
-                    + (reading.imaAmps == null ? "" : flow + Math.round(Math.abs(reading.imaAmps)) + "A");
-        }
-
-        /** Pack charge and assist/regen flow, shown with the map or gauges when the buttons are hidden. */
-        private void drawImaStrip(Canvas canvas, ObdBluetooth.Readings reading) {
-            float top = 484;
-            text(canvas, "IMA PACK", 650, top + 14, 17, AMBER, false);
-            Double charge = reading.imaCharge;
-            text(canvas, charge == null ? "--%" : Math.round(charge) + "%", 935, top + 40, 22, AMBER, true,
-                    Paint.Align.RIGHT);
-            int segments = 10;
-            int lit = charge == null ? 0 : (int) Math.round(segments * Math.max(0, Math.min(100, charge)) / 100);
-            for (int index = 0; index < segments; index++) {
-                paint.setColor(index < lit ? AMBER : UNLIT);
-                float x = 650 + index * 24;
-                canvas.drawRect(x, top + 22, x + 20, top + 44, paint);
-            }
-            // Assist/regen: zero in the middle, regen fills left, assist fills right.
-            float centerX = 1085, half = 130, barTop = top + 22, barBottom = top + 44;
-            text(canvas, "REGEN", centerX - half, top + 14, 12, MUTED, false);
-            text(canvas, "ASSIST", centerX + half, top + 14, 12, MUTED, false, Paint.Align.RIGHT);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.5f);
-            paint.setColor(LINE);
-            canvas.drawRect(centerX - half, barTop, centerX + half, barBottom, paint);
-            paint.setStyle(Paint.Style.FILL);
-            Double amps = reading.imaAmps;
-            if (amps != null) {
-                float fraction = (float) Math.max(-1, Math.min(1, amps / 120d));
-                paint.setColor(AMBER);
-                if (fraction >= 0) canvas.drawRect(centerX, barTop + 2, centerX + half * fraction, barBottom - 2, paint);
-                else canvas.drawRect(centerX + half * fraction, barTop + 2, centerX, barBottom - 2, paint);
-            }
-            line(canvas, centerX, barTop - 3, centerX, barBottom + 3, MUTED);
-            text(canvas, amps == null ? "--" : Math.round(Math.abs(amps)) + " A", centerX, top + 14, 13, AMBER, false,
-                    Paint.Align.CENTER);
         }
 
         private void drawWarmup(Canvas canvas, Double coolant) {
@@ -1286,17 +1242,17 @@ public final class HudActivity extends Activity {
             text(canvas, "03  MOVING MAP", MAP_LEFT, 118, 19, AMBER, false);
             text(canvas, "SIMULATED", MAP_RANGE_LEFT - 12, 118, 14, MUTED, false, Paint.Align.RIGHT);
             drawMapMode(canvas);
-            border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
+            border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, mapBottom());
             float progress = (now - mapPreviewStartedAt) % 24000 / 24000f;
             sampleDrive.getPosTan(progress * sampleDrive.getLength(), marker, direction);
             float course = 90 + (float) Math.toDegrees(Math.atan2(direction[1], direction[0]));
             updateMapCamera(now, course);
             float anchorX = MAP_CENTER_X + (marker[0] - 285) * 0.58f * (1 - cameraLead);
-            float anchorY = MAP_CENTER_Y + (marker[1] - 160) * 0.58f * (1 - cameraLead)
+            float anchorY = mapCenterY() + (marker[1] - 160) * 0.58f * (1 - cameraLead)
                     + FORWARD_OFFSET * cameraLead;
             setMapTransform(marker[0], marker[1], 1, anchorX, anchorY);
             canvas.save();
-            canvas.clipRect(MAP_LEFT + 1, MAP_TOP + 1, MAP_RIGHT - 1, MAP_BOTTOM - 1);
+            canvas.clipRect(MAP_LEFT + 1, MAP_TOP + 1, MAP_RIGHT - 1, mapBottom() - 1);
             canvas.save();
             canvas.concat(mapTransform);
             paint.setStyle(Paint.Style.STROKE);
@@ -1317,7 +1273,7 @@ public final class HudActivity extends Activity {
             drawMapMarker(canvas, anchorX, anchorY, course, now,
                     42.607 + (160 - marker[1]) * 0.00003, -73.700 + (marker[0] - 285) * 0.00004);
             canvas.restore();
-            text(canvas, "DEMO ROADS / GPS INACTIVE", MAP_LEFT, 469, 12, MUTED, false);
+            text(canvas, "DEMO ROADS / GPS INACTIVE", MAP_LEFT, 469 + extra(), 12, MUTED, false);
         }
 
         private void demoRoadLabel(Canvas canvas, String name, float x, float y,
@@ -1336,13 +1292,13 @@ public final class HudActivity extends Activity {
             text(canvas, region == null ? "ALBANY REGION" : region.name,
                     MAP_RANGE_LEFT - 12, 118, 11, MUTED, false, Paint.Align.RIGHT);
             drawMapMode(canvas);
-            border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
+            border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, mapBottom());
                         String status = mapStatus(region);
             if (headingUp && "GPS FIX".equals(status) && Float.isNaN(gpsCourse)) status = "GPS FIX / WAITING FOR COURSE";
-            text(canvas, status, MAP_LEFT, 469, 12, AMBER, false);
+            text(canvas, status, MAP_LEFT, 469 + extra(), 12, AMBER, false);
             if (region == null) {
                 text(canvas, roadMap.failed() ? "MAP DATA UNAVAILABLE" : "LOADING LOCAL ROADS",
-                        MAP_CENTER_X, MAP_CENTER_Y, 19, MUTED, false, Paint.Align.CENTER);
+                        MAP_CENTER_X, mapCenterY(), 19, MUTED, false, Paint.Align.CENTER);
                 return;
             }
             boolean tracking = fixInRegion(region);
@@ -1354,19 +1310,19 @@ public final class HudActivity extends Activity {
             OfflineRoadMap.Scene scene = roadMap.scene();
             if (scene == null || !scene.covers(viewX, viewY)) {
                 text(canvas, roadMap.failed() ? "MAP DATA UNAVAILABLE" : "LOADING LOCAL ROADS",
-                        MAP_CENTER_X, MAP_CENTER_Y, 19, MUTED, false, Paint.Align.CENTER);
+                        MAP_CENTER_X, mapCenterY(), 19, MUTED, false, Paint.Align.CENTER);
                 return;
             }
             if (!scene.hasRoads()) {
-                text(canvas, "NO OFFLINE ROADS HERE", MAP_CENTER_X, MAP_CENTER_Y,
+                text(canvas, "NO OFFLINE ROADS HERE", MAP_CENTER_X, mapCenterY(),
                         19, MUTED, false, Paint.Align.CENTER);
                 return;
             }
-            float anchorY = MAP_CENTER_Y + FORWARD_OFFSET * cameraLead;
+            float anchorY = mapCenterY() + FORWARD_OFFSET * cameraLead;
             setMapTransform((float) (viewX - scene.x), (float) (viewY - scene.y),
                     MAP_TILE_PIXELS, MAP_CENTER_X, anchorY);
             canvas.save();
-            canvas.clipRect(MAP_LEFT + 1, MAP_TOP + 1, MAP_RIGHT - 1, MAP_BOTTOM - 1);
+            canvas.clipRect(MAP_LEFT + 1, MAP_TOP + 1, MAP_RIGHT - 1, mapBottom() - 1);
             canvas.save();
             canvas.concat(mapTransform);
             paint.setStyle(Paint.Style.STROKE);
@@ -1397,7 +1353,7 @@ public final class HudActivity extends Activity {
                 paint.setTextSize(13);
                 float halfWidth = paint.measureText(label.name) / 2 + 5;
                 if (x - halfWidth < MAP_LEFT + 4 || x + halfWidth > MAP_RIGHT - 4
-                        || y < MAP_TOP + 16 || y > MAP_BOTTOM - 18) continue;
+                        || y < MAP_TOP + 16 || y > mapBottom() - 18) continue;
                 if (tracking && Math.abs(x - MAP_CENTER_X) < halfWidth + 30 && Math.abs(y - anchorY) < 32) continue;
                 boolean clear = true;
                 for (int index = 0; index < labelCount; index++) {
@@ -1426,11 +1382,11 @@ public final class HudActivity extends Activity {
 
         private void drawSatelliteWarning(Canvas canvas) {
             float left = MAP_CENTER_X - 174;
-            float top = MAP_CENTER_Y - 30;
+            float top = mapCenterY() - 30;
             paint.setColor(0xF2080602);
             canvas.drawRect(left, top, left + 348, top + 60, paint);
             border(canvas, left, top, left + 348, top + 60);
-            text(canvas, "SAT NOT AVAILABLE", MAP_CENTER_X, MAP_CENTER_Y + 7,
+            text(canvas, "SAT NOT AVAILABLE", MAP_CENTER_X, mapCenterY() + 7,
                     24, AMBER, true, Paint.Align.CENTER);
         }
 
@@ -1485,7 +1441,7 @@ public final class HudActivity extends Activity {
             int alpha = Math.round(opacity * 255) << 24;
             float side = x + 219 < MAP_RIGHT ? 1 : -1;
             float left = side > 0 ? 42 : -218;
-            float top = Math.max(MAP_TOP + 4 - y, Math.min(-53, MAP_BOTTOM - 52 - y));
+            float top = Math.max(MAP_TOP + 4 - y, Math.min(-53, mapBottom() - 52 - y));
             paint.setColor((Math.round(opacity * 235) << 24) | 0x080602);
             canvas.drawRect(left, top, left + 176, top + 44, paint);
             line(canvas, left, top, left + 176, top, alpha | (MUTED & 0xFFFFFF));
@@ -1669,7 +1625,7 @@ public final class HudActivity extends Activity {
             if (thermalLevel == THERMAL_NORMAL && mapPreview && mapX >= MAP_MODE_LEFT - 7 && mapX <= MAP_RIGHT + 4
                     && y >= 88 && y < MAP_TOP) return 6;
             if (thermalLevel == THERMAL_NORMAL && mapPreview && !demo && mapX >= MAP_LEFT && mapX <= MAP_RIGHT
-                    && y >= MAP_TOP && y <= 480
+                    && y >= MAP_TOP && y <= 480 + extra()
                     && (!hasPreciseLocation() || !gpsEnabled() || (!powered && !accessoryActive))) return 5;
             if (extra() > 0 || y < 570 || y > 620 || x < CONTROL_LEFT) return -1;
             int index = (int) ((x - CONTROL_LEFT) / CONTROL_STEP);

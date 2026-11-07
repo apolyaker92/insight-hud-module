@@ -22,7 +22,7 @@ Run `./android/build.ps1 -SdkDirectory <path> -BuildDirectory ./work/hud-build` 
 
 ## Gauges and testing without a car
 
-The right panel shows throttle position, engine load and an estimated MPG (from calculated load, RPM and the Insight's displacement, assuming a stoichiometric mixture, so treat it as relative feedback). Only gauges the car has actually reported appear. The IMA strip needs a data source that standard OBD-II does not provide and shows `--` until one is found. Raw read-only requests can be logged for discovery with `adb shell am start -n com.andrew.insighthud/.HudActivity --es obd_probe 2101,2201`; replies appear in logcat under `HudObdProbe`.
+The right panel shows throttle position, engine load and an estimated MPG (from calculated load, RPM and the Insight's displacement, assuming a stoichiometric mixture, so treat it as relative feedback). Only gauges the car has actually reported appear. Raw read-only requests can be logged for discovery with `adb shell am start -n com.andrew.insighthud/.HudActivity --es obd_probe 2101,2201`; replies appear in logcat under `HudObdProbe`.
 
 Choose the simulated adapter under BT SETUP / Choose paired OBD adapter to drive the real polling and parsing code from a scripted drive cycle. Run `sh android/test/run-tests.sh` for the plain-Java parser and simulator checks (no Android SDK needed).
 
