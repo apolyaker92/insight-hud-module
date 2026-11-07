@@ -13,6 +13,7 @@ final class TripStats {
     private double lastSpeed;
     private double miles;
     private boolean measuredDistance;
+    private double gallons;
     private double peakRpm = Double.NaN;
     private double peakCoolant = Double.NaN;
 
@@ -31,6 +32,7 @@ final class TripStats {
             long gap = now - lastSpeedAt;
             if (lastSpeedAt >= 0 && gap > 0 && gap <= MAX_SPEED_GAP_MS) {
                 miles += (lastSpeed + reading.speedMph) * 0.5 * gap / 3600000;
+                if (reading.fuelGph != null) gallons += reading.fuelGph * gap / 3600000;
                 measuredDistance = true;
             }
             lastSpeed = reading.speedMph;
@@ -48,6 +50,7 @@ final class TripStats {
         Bundle state = new Bundle();
         state.putLong("start", startedAt);
         state.putDouble("miles", miles);
+        state.putDouble("gallons", gallons);
         state.putBoolean("distance", measuredDistance);
         state.putDouble("rpm", peakRpm);
         state.putDouble("coolant", peakCoolant);
@@ -58,6 +61,7 @@ final class TripStats {
         if (state == null) return;
         startedAt = state.getLong("start", -1);
         miles = state.getDouble("miles");
+        gallons = state.getDouble("gallons");
         measuredDistance = state.getBoolean("distance");
         peakRpm = state.getDouble("rpm", Double.NaN);
         peakCoolant = state.getDouble("coolant", Double.NaN);
@@ -66,10 +70,11 @@ final class TripStats {
     JSONObject finish(long now, long endedAt) {
         if (startedAt < 0) return null;
         return report(endedAt, Math.max(0, (now - startedAt) / 1000),
-                measuredDistance ? miles : Double.NaN, peakRpm, peakCoolant);
+                measuredDistance ? miles : Double.NaN, peakRpm, peakCoolant,
+                measuredDistance && gallons > 0.01 ? miles / gallons : Double.NaN);
     }
 
-    static JSONObject report(long endedAt, long seconds, double miles, double rpm, double coolant) {
+    static JSONObject report(long endedAt, long seconds, double miles, double rpm, double coolant, double mpg) {
         JSONObject result = new JSONObject();
         try {
             result.put("ended", endedAt);
@@ -77,6 +82,7 @@ final class TripStats {
             if (!Double.isNaN(miles)) result.put("miles", miles);
             if (!Double.isNaN(rpm)) result.put("rpm", rpm);
             if (!Double.isNaN(coolant)) result.put("coolant", coolant);
+            if (!Double.isNaN(mpg)) result.put("mpg", mpg);
         } catch (JSONException unexpected) {
             throw new IllegalStateException(unexpected);
         }

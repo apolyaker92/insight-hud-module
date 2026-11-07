@@ -20,6 +20,12 @@ On power-up the HUD plays its startup animation and chime and reconnects to the 
 
 Run `./android/build.ps1 -SdkDirectory <path> -BuildDirectory ./work/hud-build` from the repository root in PowerShell with a JDK on PATH. The script expects Android 35's `android.jar` under `android-35` and the Windows build tools, including `lib/d8.jar` and `lib/apksigner.jar`, under `android-15` in that SDK directory. It creates a local development signing key if one is missing. Keep the same signing key for in-place updates.
 
+## Gauges and testing without a car
+
+The right panel shows throttle position, engine load and an estimated MPG (from calculated load, RPM and the Insight's displacement, assuming a stoichiometric mixture, so treat it as relative feedback). Only gauges the car has actually reported appear. The IMA strip needs a data source that standard OBD-II does not provide and shows `--` until one is found. Raw read-only requests can be logged for discovery with `adb shell am start -n com.andrew.insighthud/.HudActivity --es obd_probe 2101,2201`; replies appear in logcat under `HudObdProbe`.
+
+Choose the simulated adapter under BT SETUP / Choose paired OBD adapter to drive the real polling and parsing code from a scripted drive cycle. Run `sh android/test/run-tests.sh` for the plain-Java parser and simulator checks (no Android SDK needed).
+
 ## Offline road data
 
 The included Albany road database and optional East Coast road pack are derived from [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright) and available under the [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/). The bundled Albany fallback covers 42.49°–42.85° N and 74.03°–73.49° W.

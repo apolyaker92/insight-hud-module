@@ -119,10 +119,12 @@ public final class HudActivity extends Activity {
     private BluetoothAdapter bluetooth;
     private ObdBluetooth obd;
     private ObdBluetooth.Readings readings;
-    private static final ObdBluetooth.Readings DEMO_READINGS = new ObdBluetooth.Readings(46d, 2400d, 188d, 85d, 13.8d, 42d, 68d, 35d);
+    private static final ObdBluetooth.Readings DEMO_READINGS = new ObdBluetooth.Readings(46d, 2400d, 188d, 85d, 13.8d, 42d, 68d, 35d, 28d, 0.87d, 52d);
     private static final ObdBluetooth.Readings EMPTY_READINGS = new ObdBluetooth.Readings(null, null, null, null, null, null);
     private static final float[] DEMO_RPM = {820, 880, 1100, 1550, 2250, 3250, 4500, 5000, 3550, 2950,
             3050, 3450, 4200, 4700, 3150, 2680, 2530, 2420, 2450, 2400};
+    // Gauges the car has actually reported this session: throttle, load, MPG inputs, intake air.
+    private final boolean[] seenGauge = new boolean[4];
     private final float[] rpmHistory = new float[DEMO_RPM.length];
     private int rpmNext;
     private int rpmCount;
@@ -374,7 +376,7 @@ public final class HudActivity extends Activity {
         if (shutdownReport != null) {
             saveTrip(shutdownReport);
         } else if (demo) {
-            shutdownReport = TripStats.report(0, 1246, 12.4, 3470, 189);
+            shutdownReport = TripStats.report(0, 1246, 12.4, 3470, 189, 52);
         }
         startupPending = false;
         startupStartedAt = 0;
@@ -423,6 +425,7 @@ public final class HudActivity extends Activity {
             if (report == null) continue;
             entries.add(date.format(new Date(report.optLong("ended"))) + "    " + TripStats.time(report)
                     + "\n" + TripStats.value(report, "miles", "%.1f") + " est. mi    "
+                    + TripStats.value(report, "mpg", "%.0f") + " est. mpg    "
                     + TripStats.value(report, "rpm", "%.0f") + " peak rpm    "
                     + TripStats.value(report, "coolant", "%.0f") + " °F peak coolant");
         }
@@ -626,6 +629,7 @@ public final class HudActivity extends Activity {
             return;
         }
         updateReadings(null);
+        java.util.Arrays.fill(seenGauge, false);
         if (obd != null) obd.stop();
         if (thermalLevel == THERMAL_HOLD) linkStatus = "THERMAL HOLD";
         else if (bluetooth == null) linkStatus = "BLUETOOTH UNAVAILABLE";
@@ -642,6 +646,12 @@ public final class HudActivity extends Activity {
 
     private void updateReadings(ObdBluetooth.Readings update) {
         readings = update;
+        if (update != null) {
+            seenGauge[0] |= update.throttle != null;
+            seenGauge[1] |= update.load != null;
+            seenGauge[2] |= update.load != null && update.rpm != null;
+            seenGauge[3] |= update.intakeF != null;
+        }
         if (update == null) {
             trip.disconnect();
             rpmNext = 0;
@@ -696,6 +706,12 @@ public final class HudActivity extends Activity {
                 }).setNegativeButton("CLOSE", null).show();
     }
 
+    private void selectAdapter(String address, String name) {
+        preferences.edit().putString("adapterAddress", address).putString("adapterName", name).apply();
+        demo = false;
+        connectSavedAdapter();
+    }
+
     private void chooseAdapter() {
         if (bluetooth == null) return;
         try {
@@ -707,25 +723,28 @@ public final class HudActivity extends Activity {
             paired.sort((first, second) -> first.getAddress().compareTo(second.getAddress()));
             if (paired.isEmpty()) {
                 new AlertDialog.Builder(this).setTitle("PAIR YOUR OBD ADAPTER")
+                        .setNeutralButton("SIMULATED", (dialog, which) -> selectAdapter(SimulatedElm.ADDRESS, SimulatedElm.NAME))
                         .setMessage("Plug the Veepeak into the car and switch the ignition on. Pair it in Android Bluetooth settings, then return here and choose it.")
                         .setPositiveButton("BLUETOOTH SETTINGS", (dialog, which) ->
                                 startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)))
                         .setNegativeButton("CANCEL", null).show();
                 return;
             }
-            String[] labels = new String[paired.size()];
+            String[] labels = new String[paired.size() + 1];
+            labels[0] = "[SIMULATED ADAPTER]\nscripted drive, no hardware";
             for (int index = 0; index < paired.size(); index++) {
                 BluetoothDevice device = paired.get(index);
-                labels[index] = (device.getName() == null ? "Bluetooth device" : device.getName())
+                labels[index + 1] = (device.getName() == null ? "Bluetooth device" : device.getName())
                         + "\n" + device.getAddress();
             }
             new AlertDialog.Builder(this).setTitle("SELECT OBD ADAPTER")
                     .setItems(labels, (dialog, index) -> {
-                        BluetoothDevice device = paired.get(index);
-                        preferences.edit().putString("adapterAddress", device.getAddress())
-                                .putString("adapterName", device.getName() == null ? "OBD ADAPTER" : device.getName()).apply();
-                        demo = false;
-                        connectSavedAdapter();
+                        if (index == 0) {
+                            selectAdapter(SimulatedElm.ADDRESS, SimulatedElm.NAME);
+                            return;
+                        }
+                        BluetoothDevice device = paired.get(index - 1);
+                        selectAdapter(device.getAddress(), device.getName() == null ? "OBD ADAPTER" : device.getName());
                     }).setNegativeButton("CANCEL", null).show();
         } catch (SecurityException denied) {
             linkStatus = "BT PERMISSION NEEDED";
@@ -1108,9 +1127,7 @@ public final class HudActivity extends Activity {
             } else if (mapPreview) {
                 drawOfflineMap(canvas, now);
             } else {
-                metric(canvas, "03  INTAKE AIR", displayed.intakeF, "°F", 126, 0, 150);
-                metric(canvas, "04  OBD PORT VOLTAGE", displayed.voltage, "V", 246, 9, 16);
-                metric(canvas, "05  ENGINE LOAD", displayed.load, "%", 366, 0, 100);
+                drawMetrics(canvas, displayed);
             }
 
             if (extra() > 0) drawImaStrip(canvas, displayed);
@@ -1126,6 +1143,24 @@ public final class HudActivity extends Activity {
             text(canvas, powered ? "EXT POWER" : "BATTERY POWER", 1220, footer + 56, 12, MUTED, false, Paint.Align.RIGHT);
         }
 
+        /** Throttle, load, estimated MPG and (as a fallback) intake air; only gauges the car reports. */
+        private void drawMetrics(Canvas canvas, ObdBluetooth.Readings reading) {
+            boolean anySeen = seenGauge[0] || seenGauge[1] || seenGauge[2] || seenGauge[3];
+            int slot = 0;
+            for (int id = 0; id < 4 && slot < 3; id++) {
+                boolean show = demo || (anySeen ? seenGauge[id] : id < 3);
+                if (!show) continue;
+                float y = 126 + slot * 120;
+                switch (id) {
+                    case 0: metric(canvas, "03  THROTTLE", reading.throttle, "%", y, 0, 100); break;
+                    case 1: metric(canvas, "04  ENGINE LOAD", reading.load, "%", y, 0, 100); break;
+                    case 2: metric(canvas, "05  EST. MPG", reading.mpg, "MPG", y, 0, 80); break;
+                    default: metric(canvas, "06  INTAKE AIR", reading.intakeF, "\u00b0F", y, 0, 150); break;
+                }
+                slot++;
+            }
+        }
+
         private String imaSummary(ObdBluetooth.Readings reading) {
             if (reading.imaCharge == null) return "IMA --";
             String flow = reading.imaAmps == null ? "" : reading.imaAmps >= 0 ? "  ASSIST " : "  REGEN ";
@@ -1136,7 +1171,7 @@ public final class HudActivity extends Activity {
         /** Pack charge and assist/regen flow, shown with the map or gauges when the buttons are hidden. */
         private void drawImaStrip(Canvas canvas, ObdBluetooth.Readings reading) {
             float top = 484;
-            text(canvas, "04  IMA PACK", 650, top + 14, 17, AMBER, false);
+            text(canvas, "IMA PACK", 650, top + 14, 17, AMBER, false);
             Double charge = reading.imaCharge;
             text(canvas, charge == null ? "--%" : Math.round(charge) + "%", 935, top + 40, 22, AMBER, true,
                     Paint.Align.RIGHT);

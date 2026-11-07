@@ -7,6 +7,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -49,6 +50,10 @@ final class ObdBluetooth {
         final Double imaCharge;
         /** IMA pack current in amps: positive is assist, negative is regen. */
         final Double imaAmps;
+        final Double throttle;
+        /** Estimated fuel flow in gallons per hour, and the estimated MPG derived from it. */
+        final Double fuelGph;
+        final Double mpg;
 
         Readings(Double speedMph, Double rpm, Double coolantF, Double intakeF, Double voltage, Double load) {
             this(speedMph, rpm, coolantF, intakeF, voltage, load, null, null);
@@ -56,6 +61,14 @@ final class ObdBluetooth {
 
         Readings(Double speedMph, Double rpm, Double coolantF, Double intakeF, Double voltage, Double load,
                  Double imaCharge, Double imaAmps) {
+            this(speedMph, rpm, coolantF, intakeF, voltage, load, imaCharge, imaAmps, null, null, null);
+        }
+
+        Readings(Double speedMph, Double rpm, Double coolantF, Double intakeF, Double voltage, Double load,
+                 Double imaCharge, Double imaAmps, Double throttle, Double fuelGph, Double mpg) {
+            this.throttle = throttle;
+            this.fuelGph = fuelGph;
+            this.mpg = mpg;
             this.imaCharge = imaCharge;
             this.imaAmps = imaAmps;
             this.speedMph = speedMph;
@@ -70,14 +83,16 @@ final class ObdBluetooth {
     private static final class Session {
         final String address;
         volatile boolean cancelled;
-        volatile BluetoothSocket socket;
+        volatile Closeable closer;
+        volatile InputStream input;
+        volatile OutputStream output;
 
         Session(String address) { this.address = address; }
 
         void closeSocket() {
-            BluetoothSocket openSocket = socket;
-            if (openSocket != null) {
-                try { openSocket.close(); } catch (IOException ignored) { }
+            Closeable open = closer;
+            if (open != null) {
+                try { open.close(); } catch (IOException ignored) { }
             }
         }
     }
@@ -140,25 +155,37 @@ final class ObdBluetooth {
     private void run(Session session) {
         while (!session.cancelled && !Thread.currentThread().isInterrupted()) {
             try {
-                if (!adapter.isEnabled()) {
+                boolean simulated = SimulatedElm.ADDRESS.equals(session.address);
+                if (!simulated && !adapter.isEnabled()) {
                     publish(session, "BLUETOOTH OFF", null);
                     Thread.sleep(5000);
                     continue;
                 }
-                BluetoothDevice device = adapter.getRemoteDevice(session.address);
-                if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
-                    publish(session, "PAIR ADAPTER", null);
-                    Thread.sleep(5000);
-                    continue;
-                }
-                publish(session, "BT CONNECTING", null);
-                session.socket = device.createRfcommSocketToServiceRecord(SERIAL_PORT);
-                if (session.cancelled) throw new InterruptedException();
-                ScheduledFuture<?> connectTimeout = schedule(session, 12000);
-                try {
-                    session.socket.connect();
-                } finally {
-                    connectTimeout.cancel(false);
+                if (simulated) {
+                    publish(session, "SIM CONNECTING", null);
+                    SimulatedElm sim = new SimulatedElm(SystemClock::elapsedRealtime);
+                    session.closer = sim;
+                    session.input = sim.input();
+                    session.output = sim.output();
+                } else {
+                    BluetoothDevice device = adapter.getRemoteDevice(session.address);
+                    if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
+                        publish(session, "PAIR ADAPTER", null);
+                        Thread.sleep(5000);
+                        continue;
+                    }
+                    publish(session, "BT CONNECTING", null);
+                    BluetoothSocket socket = device.createRfcommSocketToServiceRecord(SERIAL_PORT);
+                    session.closer = socket;
+                    if (session.cancelled) throw new InterruptedException();
+                    ScheduledFuture<?> connectTimeout = schedule(session, 12000);
+                    try {
+                        socket.connect();
+                    } finally {
+                        connectTimeout.cancel(false);
+                    }
+                    session.input = socket.getInputStream();
+                    session.output = socket.getOutputStream();
                 }
                 publish(session, "ADAPTER SETUP", null);
                 command(session, "ATZ", 5000);
@@ -193,8 +220,9 @@ final class ObdBluetooth {
         int emptyCycles = 0;
         boolean speedSupported = ObdProtocol.supports(supported, 0x0D);
         boolean rpmSupported = ObdProtocol.supports(supported, 0x0C);
+        boolean throttleSupported = ObdProtocol.supports(supported, 0x11);
         boolean hasInputs = speedSupported || rpmSupported || ObdProtocol.supports(supported, 5)
-                || ObdProtocol.supports(supported, 15) || ObdProtocol.supports(supported, 4);
+                || ObdProtocol.supports(supported, 15) || ObdProtocol.supports(supported, 4) || throttleSupported;
         while (!session.cancelled) {
             String[] probe = pendingProbe;
             if (probe != null) {
@@ -213,10 +241,15 @@ final class ObdBluetooth {
             Double voltage = ObdProtocol.voltage(command(session, "ATRV", 2000));
             Double rpm = rpmSupported ? ObdProtocol.engineRpm(command(session, "010C", 2000)) : null;
             Double speed = speedSupported ? ObdProtocol.speedMph(command(session, "010D", 2000)) : null;
-            if (hasInputs && speed == null && rpm == null && coolant == null && intake == null && load == null) emptyCycles++;
+            Double throttle = throttleSupported ? ObdProtocol.throttle(command(session, "0111", 2000)) : null;
+            Double fuelGph = ObdProtocol.fuelGallonsPerHour(load, rpm);
+            Double mpg = ObdProtocol.estimatedMpg(speed, fuelGph);
+            if (hasInputs && speed == null && rpm == null && coolant == null && intake == null && load == null
+                    && throttle == null) emptyCycles++;
             else emptyCycles = 0;
             if (emptyCycles >= 3) throw new IOException("ECU stopped responding");
-            publish(session, "BT LIVE", new Readings(speed, rpm, coolant, intake, voltage, load));
+            publish(session, session.address.equals(SimulatedElm.ADDRESS) ? "SIM LIVE" : "BT LIVE",
+                    new Readings(speed, rpm, coolant, intake, voltage, load, null, null, throttle, fuelGph, mpg));
             Thread.sleep(1000);
         }
     }
@@ -225,8 +258,8 @@ final class ObdBluetooth {
         if (session.cancelled) throw new InterruptedException();
         ScheduledFuture<?> timeout = schedule(session, timeoutMs);
         try {
-            InputStream input = session.socket.getInputStream();
-            OutputStream output = session.socket.getOutputStream();
+            InputStream input = session.input;
+            OutputStream output = session.output;
             int drained = 0;
             while (input.available() > 0 && drained++ < 8192) input.read();
             output.write((request + "\r").getBytes(StandardCharsets.US_ASCII));

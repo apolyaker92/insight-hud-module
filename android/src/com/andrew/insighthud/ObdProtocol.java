@@ -49,6 +49,32 @@ final class ObdProtocol {
         return bytes == null ? null : ((bytes[0] & 0xFF) * 256 + (bytes[1] & 0xFF)) / 4.0;
     }
 
+    static Double throttle(String response) {
+        byte[] bytes = payload(response, 0x11, 1);
+        return bytes == null ? null : (bytes[0] & 0xFF) * 100.0 / 255;
+    }
+
+    // Fuel use is estimated from calculated engine load (normalized air mass), RPM and the Insight's
+    // 0.995 L displacement, assuming a stoichiometric mixture. The real engine runs lean at cruise, so
+    // treat the result as relative feedback, not an exact figure.
+    private static final double DISPLACEMENT_LITERS = 0.995;
+    private static final double AIR_GRAMS_PER_LITER = 1.184;
+    private static final double STOICH_AIR_FUEL = 14.7;
+    private static final double FUEL_GRAMS_PER_LITER = 740;
+    private static final double LITERS_PER_GALLON = 3.785;
+
+    static Double fuelGallonsPerHour(Double load, Double rpm) {
+        if (load == null || rpm == null || rpm < 400) return null;
+        double airGramsPerSecond = load / 100 * DISPLACEMENT_LITERS * rpm / 120 * AIR_GRAMS_PER_LITER;
+        double fuelGramsPerSecond = airGramsPerSecond / STOICH_AIR_FUEL;
+        return fuelGramsPerSecond * 3600 / FUEL_GRAMS_PER_LITER / LITERS_PER_GALLON;
+    }
+
+    static Double estimatedMpg(Double speedMph, Double gallonsPerHour) {
+        if (speedMph == null || gallonsPerHour == null || speedMph < 1 || gallonsPerHour < 0.05) return null;
+        return Math.min(99, speedMph / gallonsPerHour);
+    }
+
     static Double voltage(String response) {
         Matcher match = VOLTAGE.matcher(response.toUpperCase(Locale.US));
         if (!match.find()) return null;
