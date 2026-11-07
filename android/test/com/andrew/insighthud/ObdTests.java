@@ -151,6 +151,31 @@ public final class ObdTests {
         check("a brief dropout that recovers stays silent", blip.update(850d, 0d, true, 300) == AutoStopTracker.Event.NONE);
         check("missing readings are ignored", new AutoStopTracker().update(null, null, true, 0) == AutoStopTracker.Event.NONE);
 
+        SoundPolicy policy = new SoundPolicy();
+        check("full volume plays everything at 1.0", policy.gain(SoundPolicy.Kind.UI, false) == 1.0f
+                && policy.gain(SoundPolicy.Kind.CRITICAL, false) == 1.0f);
+        policy.level = 1;
+        check("volume steps scale every sound", policy.gain(SoundPolicy.Kind.INFO, false) == 0.5f);
+        policy.mode = 2;
+        boolean allSilent = true;
+        for (SoundPolicy.Kind kind : SoundPolicy.Kind.values()) allSilent &= policy.gain(kind, false) == 0f;
+        check("mute silences every kind", allSilent);
+        policy.mode = 1;
+        check("alerts-only keeps warnings", policy.gain(SoundPolicy.Kind.WARNING, false) > 0f);
+        check("alerts-only keeps critical", policy.gain(SoundPolicy.Kind.CRITICAL, false) > 0f);
+        check("alerts-only drops clicks, info and chimes", policy.gain(SoundPolicy.Kind.UI, false) == 0f
+                && policy.gain(SoundPolicy.Kind.INFO, false) == 0f && policy.gain(SoundPolicy.Kind.STARTUP, false) == 0f);
+        check("a volume change is still audible in alerts-only", policy.gain(SoundPolicy.Kind.FEEDBACK, false) > 0f);
+        policy.mode = 0;
+        policy.level = 3;
+        check("night quiet lowers sound in the dark", policy.gain(SoundPolicy.Kind.UI, true) < 1.0f);
+        policy.nightQuiet = false;
+        check("and is off when disabled", policy.gain(SoundPolicy.Kind.UI, true) == 1.0f);
+        policy.nightQuiet = true;
+        check("labels read clearly", policy.label(false).equals("ALL 100%") && policy.label(true).equals("ALL 100% NIGHT"));
+        policy.mode = 2;
+        check("mute label", policy.label(false).equals("MUTE"));
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }

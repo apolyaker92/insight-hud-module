@@ -156,6 +156,7 @@ public final class HudActivity extends Activity {
     private final boolean[] seenGauge = new boolean[4];
     private final Alerts alerts = new Alerts();
     private final AutoStopTracker autoStop = new AutoStopTracker();
+    private final SoundPolicy sounds = new SoundPolicy();
     private volatile int autoStopLoadId, autoStartLoadId;
     private static final double WARM_F = 175;  // "operating temperature reached"
     private static final double HOT_F = 230;   // coolant warning; the dash gauge remains authoritative
@@ -285,6 +286,10 @@ public final class HudActivity extends Activity {
         sensors = getSystemService(SensorManager.class);
         lightSensor = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_LIGHT);
         buttonsMode = Math.max(0, Math.min(2, preferences.getInt("buttonsMode", 0)));
+        sounds.mode = Math.max(0, Math.min(SoundPolicy.MODE_NAMES.length - 1, preferences.getInt("soundMode", 0)));
+        sounds.level = Math.max(0, Math.min(SoundPolicy.LEVELS.length - 1,
+                preferences.getInt("soundLevel", SoundPolicy.LEVELS.length - 1)));
+        sounds.nightQuiet = preferences.getBoolean("nightQuiet", true);
         mapPreview = preferences.getBoolean("mapPreview", false);
         headingUp = preferences.getBoolean("headingUp", false);
         mapRange = Math.max(0, Math.min(RANGE_NAMES.length - 1, preferences.getInt("mapRange", 0)));
@@ -376,11 +381,48 @@ public final class HudActivity extends Activity {
         if (alerts.raise(text, level, SystemClock.uptimeMillis())) hud.invalidate();
     }
 
+    private boolean ambientDark() {
+        return lightSensor != null && autoLevel <= SoundPolicy.DARK_LEVEL;
+    }
+
+    /** Every effect goes through here so mode, volume and night-quiet apply to all of them. */
+    private void playSound(int id, float base, SoundPolicy.Kind kind) {
+        if (switchSounds == null || id == 0) return;
+        float gain = sounds.gain(kind, ambientDark());
+        if (gain <= 0f) return;
+        float volume = Math.min(1f, base * gain);
+        switchSounds.play(id, volume, volume, 1, 0, 1);
+    }
+
+    private void saveSoundSettings() {
+        preferences.edit().putInt("soundMode", sounds.mode).putInt("soundLevel", sounds.level)
+                .putBoolean("nightQuiet", sounds.nightQuiet).apply();
+        playSound(switchSoundId, 0.5f, SoundPolicy.Kind.FEEDBACK); // lets you hear the new level
+        if (hud != null) hud.invalidate();
+    }
+
+    private void cycleSoundMode() {
+        sounds.mode = (sounds.mode + 1) % SoundPolicy.MODE_NAMES.length;
+        saveSoundSettings();
+    }
+
+    private void cycleVolume() {
+        sounds.level = (sounds.level + 1) % SoundPolicy.LEVELS.length;
+        saveSoundSettings();
+    }
+
+    private void toggleNightQuiet() {
+        sounds.nightQuiet = !sounds.nightQuiet;
+        updateLightSensor();
+        saveSoundSettings();
+    }
+
     private void playAlertSound(int level) {
         int id = level == Alerts.CRITICAL ? alertCriticalLoadId : level == Alerts.WARN ? alertWarnLoadId : alertInfoLoadId;
         if (switchSounds == null || !loadedSamples.contains(id)) return;
         float volume = level == Alerts.INFO ? 0.8f : 0.95f;
-        switchSounds.play(id, volume, volume, 1, 0, 1);
+        playSound(id, volume, level == Alerts.CRITICAL ? SoundPolicy.Kind.CRITICAL
+                : level == Alerts.WARN ? SoundPolicy.Kind.WARNING : SoundPolicy.Kind.INFO);
     }
 
     private void resetTripAlerts() {
@@ -515,7 +557,7 @@ public final class HudActivity extends Activity {
         if (foreground && getSystemService(PowerManager.class).isInteractive()) {
             shutdownStartedAt = SystemClock.uptimeMillis();
             main.postDelayed(finishShutdown, shutdownDuration());
-            if (shutdownSoundId != 0 && switchSounds != null) switchSounds.play(shutdownSoundId, 0.9f, 0.9f, 1, 0, 1);
+            playSound(shutdownSoundId, 0.9f, SoundPolicy.Kind.STARTUP);
         } else {
             blankParkedHud();
         }
@@ -614,8 +656,10 @@ public final class HudActivity extends Activity {
     private void playStartupSound() {
         preloadStartupSound();
         MediaPlayer player = startupSound;
-        if (player != null) {
+        float chimeGain = sounds.gain(SoundPolicy.Kind.STARTUP, ambientDark());
+        if (player != null && chimeGain > 0f) {
             try {
+                player.setVolume(chimeGain, chimeGain);
                 if (startupPlaying) player.seekTo(0);
                 player.start();
                 startupPlaying = true;
@@ -862,7 +906,7 @@ public final class HudActivity extends Activity {
                 if (event != AutoStopTracker.Event.NONE && !parkedBlank && !thermalBlank
                         && switchSounds != null) {
                     int id = event == AutoStopTracker.Event.STOP ? autoStopLoadId : autoStartLoadId;
-                    if (loadedSamples.contains(id)) switchSounds.play(id, 0.55f, 0.55f, 1, 0, 1);
+                    if (loadedSamples.contains(id)) playSound(id, 0.55f, SoundPolicy.Kind.UI);
                     Log.i("HudSound", event == AutoStopTracker.Event.STOP ? "auto-stop" : "auto-restart");
                 }
             }
@@ -889,7 +933,10 @@ public final class HudActivity extends Activity {
                 .setItems(new String[]{"Choose paired OBD adapter", "Pair device / enable Bluetooth",
                         "Forget saved adapter", "Android settings",
                         "Bottom buttons: " + BUTTON_MODE_NAMES[buttonsMode], "Toggle mirror", "Toggle demo", "Trip log",
-                        "Brightness: " + BRIGHTNESS_NAMES[brightnessMode]}, (dialog, choice) -> {
+                        "Brightness: " + BRIGHTNESS_NAMES[brightnessMode],
+                        "Sound: " + SoundPolicy.MODE_NAMES[sounds.mode],
+                        "Volume: " + Math.round(SoundPolicy.LEVELS[sounds.level] * 100) + "%",
+                        "Night quiet: " + (sounds.nightQuiet ? "ON" : "OFF")}, (dialog, choice) -> {
                     switch (choice) {
                         case 0:
                             chooseAdapter();
@@ -920,6 +967,15 @@ public final class HudActivity extends Activity {
                             break;
                         case 8:
                             activateControl(2);
+                            break;
+                        case 9:
+                            cycleSoundMode();
+                            break;
+                        case 10:
+                            cycleVolume();
+                            break;
+                        case 11:
+                            toggleNightQuiet();
                             break;
                     }
                 }).setNegativeButton("CLOSE", null).show();
@@ -1019,7 +1075,7 @@ public final class HudActivity extends Activity {
     }
 
     private void updateLightSensor() {
-        boolean wanted = foreground && brightnessMode == 0 && lightSensor != null;
+        boolean wanted = foreground && (brightnessMode == 0 || sounds.nightQuiet) && lightSensor != null;
         if (wanted == lightRegistered) return;
         lightRegistered = wanted;
         if (wanted) {
@@ -1031,6 +1087,15 @@ public final class HudActivity extends Activity {
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        int keyCode = event.getKeyCode();
+        if (keyCode == KeyEvent.KEYCODE_F5 || keyCode == KeyEvent.KEYCODE_F6) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
+                    && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD) {
+                if (keyCode == KeyEvent.KEYCODE_F5) cycleSoundMode();
+                else cycleVolume();
+            }
+            return true;
+        }
         int control;
         switch (event.getKeyCode()) {
             case KeyEvent.KEYCODE_F1: control = 4; break;
@@ -1086,7 +1151,7 @@ public final class HudActivity extends Activity {
                 int lockSound = headingUp ? lockHeadingSoundId : lockNorthSoundId;
                 if (mapPreview && thermalLevel == THERMAL_NORMAL && lockSound != 0
                         && (demo || (gpsFix != null && !Float.isNaN(gpsCourse)))) {
-                    switchSounds.play(lockSound, 0.9f, 0.9f, 1, 0, 1);
+                    playSound(lockSound, 0.9f, SoundPolicy.Kind.UI);
                     skipClick = true;
                 }
                 break;
@@ -1098,7 +1163,7 @@ public final class HudActivity extends Activity {
                 boolean zoomingIn = RANGE_ZOOM[mapRange] > zoomBefore;
                 int zoomSound = zoomingIn ? zoomInSoundId : zoomOutSoundId;
                 if (mapPreview && thermalLevel == THERMAL_NORMAL && zoomSound != 0) {
-                    switchSounds.play(zoomSound, 0.85f, 0.85f, 1, 0, 1);
+                    playSound(zoomSound, 0.85f, SoundPolicy.Kind.UI);
                     skipClick = true;
                 }
                 break;
@@ -1108,7 +1173,7 @@ public final class HudActivity extends Activity {
             default:
                 return;
         }
-        if (!skipClick && switchSoundId != 0) switchSounds.play(switchSoundId, 0.42f, 0.42f, 1, 0, 1);
+        if (!skipClick) playSound(switchSoundId, 0.42f, SoundPolicy.Kind.UI);
         hud.invalidate();
     }
 
@@ -1405,7 +1470,8 @@ public final class HudActivity extends Activity {
             line(canvas, 40, footer, 1240, footer, LINE);
             text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
             text(canvas, "BRIGHT " + BRIGHTNESS_NAMES[brightnessMode] + (brightnessMode == 0
-                    ? "  " + Math.round(autoLevel * 100) + "%" : ""), 640, footer + 56, 12, MUTED, false,
+                    ? "  " + Math.round(autoLevel * 100) + "%" : "")
+                    + "    SND " + sounds.label(ambientDark()), 640, footer + 56, 12, MUTED, false,
                     Paint.Align.CENTER);
             String adapterName = preferences.getString("adapterName", "NO ADAPTER SELECTED");
             if (adapterName.length() > 28) adapterName = adapterName.substring(0, 28);
