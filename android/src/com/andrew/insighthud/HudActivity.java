@@ -26,6 +26,7 @@ import android.location.LocationManager;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
+import android.media.SoundPool;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -82,6 +83,8 @@ public final class HudActivity extends Activity {
     private long startupStartedAt;
     private long shutdownStartedAt;
     private MediaPlayer startupSound;
+    private SoundPool switchSounds;
+    private int switchSoundId;
     private static final long STARTUP_DURATION_MS = 2800;
     private static final long POWER_LOSS_DELAY_MS = 3000;
     private static final long SHUTDOWN_DURATION_MS = 1200;
@@ -160,6 +163,15 @@ public final class HudActivity extends Activity {
         startupPending = state != null && state.getBoolean("startupPending");
         parkedBlank = state != null && state.getBoolean("parkedBlank");
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
+        switchSounds = new SoundPool.Builder().setMaxStreams(1)
+                .setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                .build();
+        switchSounds.setOnLoadCompleteListener((pool, sample, status) -> {
+            if (pool == switchSounds && status == 0) switchSoundId = sample;
+        });
+        switchSounds.load(this, R.raw.switch_click, 1);
         preferences = getSharedPreferences("hud", MODE_PRIVATE);
         mirror = preferences.getBoolean("mirror", false);
         dim = preferences.getBoolean("dim", false);
@@ -213,6 +225,8 @@ public final class HudActivity extends Activity {
     @Override protected void onDestroy() {
         main.removeCallbacksAndMessages(null);
         if (obd != null) obd.destroy();
+        switchSounds.release();
+        switchSounds = null;
         roadMap.close();
         unregisterReceiver(batteryReceiver);
         super.onDestroy();
@@ -618,7 +632,7 @@ public final class HudActivity extends Activity {
                 applyBrightness();
                 break;
             case 3:
-                showLinkMenu();
+                showTripHistory();
                 break;
             case 4:
                 mapPreview = !mapPreview;
@@ -638,11 +652,12 @@ public final class HudActivity extends Activity {
                 preferences.edit().putInt("mapRange", mapRange).apply();
                 break;
             case 8:
-                showTripHistory();
+                showLinkMenu();
                 break;
             default:
                 return;
         }
+        if (switchSoundId != 0) switchSounds.play(switchSoundId, 0.42f, 0.42f, 1, 0, 1);
         hud.invalidate();
     }
 
@@ -667,6 +682,7 @@ public final class HudActivity extends Activity {
         private static final float FORWARD_OFFSET = 82;
         private static final int MAP_LOCK_MS = 150;
         private static final int MAP_TRANSITION_MS = 800;
+        private static final int TARGET_CAPTION_MS = 1450;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
         private final Matrix mapTransform = new Matrix();
@@ -678,6 +694,7 @@ public final class HudActivity extends Activity {
         private float cameraTargetAngle;
         private float cameraTargetLead;
         private long cameraStartedAt;
+        private long lockStartedAt;
         private int cameraDuration;
         private boolean cameraMode;
         private float rangeZoom = RANGE_ZOOM[mapRange];
@@ -722,7 +739,7 @@ public final class HudActivity extends Activity {
             // The PH-1's legacy GPU driver drops cached text on state changes.
             // Rasterize this static instrument only when its data changes.
             setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-            setContentDescription("Insight HUD Module 2.3. Speed and RPM history on the left. Gauges or an offline road map on the right. Bottom controls toggle mirror, demo, night brightness, Bluetooth setup, and map view.");
+            setContentDescription("Insight HUD Module 2.3. Speed, coolant, and RPM history on the left. Gauges or an offline road map on the right. Bluetooth setup is in the header. Bottom controls include the trip log.");
             setFocusable(true);
         }
 
@@ -753,7 +770,8 @@ public final class HudActivity extends Activity {
             canvas.restore();
             if ((starting || shuttingDown) && isShown()) postInvalidateDelayed(80);
             else if (mapPreview && foreground && hasWindowFocus()) {
-                if (now - cameraStartedAt < cameraDuration || now - rangeStartedAt < 500) postInvalidateDelayed(32);
+                if (now - cameraStartedAt < cameraDuration || now - rangeStartedAt < 500
+                        || (lockStartedAt != 0 && now - lockStartedAt < TARGET_CAPTION_MS)) postInvalidateDelayed(32);
                 else if (demo && powered) postInvalidateDelayed(100);
             }
         }
@@ -841,13 +859,16 @@ public final class HudActivity extends Activity {
             text(canvas, "INSIGHT", 60, 69, 24, AMBER, true);
             text(canvas, "HUD MODULE 2.3", 230, 68, 16, MUTED, false);
             text(canvas, demo ? "[ DEMO - SIMULATED ]" : "[ " + linkStatus + " ]",
-                    1220, 68, 16, AMBER, false, Paint.Align.RIGHT);
+                    1115, 68, 16, AMBER, false, Paint.Align.RIGHT);
+            border(canvas, 1134, 46, 1220, 77);
+            text(canvas, "BT SETUP", 1177, 67, 13, MUTED, false, Paint.Align.CENTER);
             line(canvas, 40, 88, 1240, 88, LINE);
             text(canvas, "01  VEHICLE SPEED", 65, 127, 19, AMBER, false);
             String speed = wholeReading(displayed.speedMph, "---");
             float speedWidth = 105;
             number(canvas, speed, 65 + (3 - speed.length()) * speedWidth * 1.2f, 142, speedWidth);
             text(canvas, "MPH", 477, 332, 32, AMBER, false);
+            drawWarmup(canvas, displayed.coolantF);
             drawRpmTrace(canvas, displayed.rpm);
 
             line(canvas, 620, 88, 620, 480, LINE);
@@ -856,10 +877,9 @@ public final class HudActivity extends Activity {
             } else if (mapPreview) {
                 drawOfflineMap(canvas, now);
             } else {
-                metric(canvas, "03  COOLANT TEMP", displayed.coolantF, "°F", 117, 100, 250);
-                metric(canvas, "04  INTAKE AIR", displayed.intakeF, "°F", 211, 0, 150);
-                metric(canvas, "05  OBD PORT VOLTAGE", displayed.voltage, "V", 305, 9, 16);
-                metric(canvas, "06  ENGINE LOAD", displayed.load, "%", 399, 0, 100);
+                metric(canvas, "03  INTAKE AIR", displayed.intakeF, "°F", 126, 0, 150);
+                metric(canvas, "04  OBD PORT VOLTAGE", displayed.voltage, "V", 246, 9, 16);
+                metric(canvas, "05  ENGINE LOAD", displayed.load, "%", 366, 0, 100);
             }
 
             line(canvas, 40, 480, 1240, 480, LINE);
@@ -867,9 +887,6 @@ public final class HudActivity extends Activity {
             String adapterName = preferences.getString("adapterName", "NO ADAPTER SELECTED");
             if (adapterName.length() > 28) adapterName = adapterName.substring(0, 28);
             text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, 536, 12, MUTED, false);
-            border(canvas, 335, 495, 460, 537);
-            text(canvas, "TRIP LOG", 397.5f, 522, 14, AMBER, false, Paint.Align.CENTER);
-            drawWarmup(canvas, displayed.coolantF);
             String phoneState = (battery < 0 ? "--" : String.valueOf(battery)) + "%  /  "
                     + Math.round(batteryTemperature) + " C";
             text(canvas, "PHONE " + phoneState, 1220, 511, 14, MUTED, false, Paint.Align.RIGHT);
@@ -877,14 +894,14 @@ public final class HudActivity extends Activity {
         }
 
         private void drawWarmup(Canvas canvas, Double coolant) {
-            text(canvas, "COOLANT WARM-UP", 495, 506, 12, MUTED, false);
-            text(canvas, wholeReading(coolant, "--") + " °F", 826, 506, 13, AMBER, false, Paint.Align.RIGHT);
+            text(canvas, "COOLANT", 573, 127, 12, MUTED, false, Paint.Align.CENTER);
+            text(canvas, wholeReading(coolant, "--") + "°F", 573, 331, 14, AMBER, false, Paint.Align.CENTER);
             // This is a display scale, not an engine warning threshold.
-            int lit = coolant == null ? 0 : Math.max(0, (int) Math.round((coolant - 100) / 90 * 12));
-            for (int index = 0; index < 12; index++) {
+            int lit = coolant == null ? 0 : Math.max(0, (int) Math.round((coolant - 100) / 90 * 10));
+            for (int index = 0; index < 10; index++) {
                 paint.setColor(index < lit ? AMBER : UNLIT);
-                float x = 495 + 28 * index;
-                canvas.drawRect(x, 515, x + 23, 530, paint);
+                float y = 297 - 16 * index;
+                canvas.drawRect(561, y, 585, y + 10, paint);
             }
         }
 
@@ -935,6 +952,7 @@ public final class HudActivity extends Activity {
             cameraTargetLead = targetLead;
             cameraStartedAt = now;
             cameraDuration = modeChanged && !Float.isNaN(course) ? MAP_TRANSITION_MS : 360;
+            if (modeChanged) lockStartedAt = cameraDuration == MAP_TRANSITION_MS ? now : 0;
         }
 
         private void sampleMapCamera(long now) {
@@ -986,7 +1004,8 @@ public final class HudActivity extends Activity {
             demoRoadLabel(canvas, "ROUTE 08", 420, 76, anchorX, anchorY, AMBER);
             demoRoadLabel(canvas, "RIVER RD", 43, 179, anchorX, anchorY, MUTED);
             demoRoadLabel(canvas, "DEPOT AVE", 390, 306, anchorX, anchorY, MUTED);
-            drawMapMarker(canvas, anchorX, anchorY, course, now);
+            drawMapMarker(canvas, anchorX, anchorY, course, now,
+                    42.607 + (160 - marker[1]) * 0.00003, -73.700 + (marker[0] - 285) * 0.00004);
             canvas.restore();
             text(canvas, "DEMO ROADS / GPS INACTIVE", MAP_LEFT, 469, 12, MUTED, false);
         }
@@ -1084,7 +1103,8 @@ public final class HudActivity extends Activity {
                 labelWidth[labelCount++] = halfWidth;
                 if (labelCount == labelNames.length) break;
             }
-            if (tracking) drawMapMarker(canvas, MAP_CENTER_X, anchorY, course, now);
+            if (tracking) drawMapMarker(canvas, MAP_CENTER_X, anchorY, course, now,
+                    gpsFix.getLatitude(), gpsFix.getLongitude());
             canvas.restore();
         }
 
@@ -1097,13 +1117,14 @@ public final class HudActivity extends Activity {
             return gpsTestActive ? "TEST / " + status + " / TAP TO STOP" : status;
         }
 
-        private void drawMapMarker(Canvas canvas, float x, float y, float course, long now) {
+        private void drawMapMarker(Canvas canvas, float x, float y, float course, long now,
+                                   double latitude, double longitude) {
             canvas.save();
             canvas.translate(x, y);
             paint.setColor(0xFF080602);
             canvas.drawCircle(0, 0, 19, paint);
-            long elapsed = now - cameraStartedAt;
-            if (cameraDuration == MAP_TRANSITION_MS && elapsed < MAP_TRANSITION_MS) {
+            long elapsed = now - lockStartedAt;
+            if (lockStartedAt != 0 && elapsed < MAP_TRANSITION_MS) {
                 float fade = Math.min(1, (MAP_TRANSITION_MS - elapsed) / 370f);
                 int reticle = (Math.round(fade * 255) << 24) | (AMBER & 0xFFFFFF);
                 int radius = 22 + Math.max(0, MAP_LOCK_MS - (int) elapsed) / 12;
@@ -1112,6 +1133,9 @@ public final class HudActivity extends Activity {
                     line(canvas, radius, -radius, radius, -radius + 8, reticle);
                     canvas.rotate(90);
                 }
+            }
+            if (lockStartedAt != 0 && elapsed < TARGET_CAPTION_MS) {
+                drawTargetCaption(canvas, x, y, latitude, longitude, elapsed);
             }
             paint.setColor(AMBER);
             if (!Float.isNaN(course)) {
@@ -1127,6 +1151,23 @@ public final class HudActivity extends Activity {
                 canvas.drawCircle(0, 0, 8, paint);
             }
             canvas.restore();
+        }
+
+        private void drawTargetCaption(Canvas canvas, float x, float y, double latitude, double longitude, long elapsed) {
+            float opacity = Math.min(1, (TARGET_CAPTION_MS - elapsed) / 320f);
+            int alpha = Math.round(opacity * 255) << 24;
+            float side = x + 219 < MAP_RIGHT ? 1 : -1;
+            float left = side > 0 ? 42 : -218;
+            float top = Math.max(MAP_TOP + 4 - y, Math.min(-53, MAP_BOTTOM - 52 - y));
+            paint.setColor((Math.round(opacity * 235) << 24) | 0x080602);
+            canvas.drawRect(left, top, left + 176, top + 44, paint);
+            line(canvas, left, top, left + 176, top, alpha | (MUTED & 0xFFFFFF));
+            line(canvas, side * 28, -8, side * 42, top + 34, alpha | (MUTED & 0xFFFFFF));
+            text(canvas, demo ? "TARGET ZE1 / SIM" : "TARGET ZE1 / LOCK",
+                    left + 8, top + 17, 13, alpha | (AMBER & 0xFFFFFF), true);
+            String coordinates = String.format(Locale.US, "%.4f%s  %.4f%s", Math.abs(latitude),
+                    latitude >= 0 ? "N" : "S", Math.abs(longitude), longitude >= 0 ? "E" : "W");
+            text(canvas, coordinates, left + 8, top + 34, 12, alpha | (AMBER & 0xFFFFFF), false);
         }
 
         private void drawRpmTrace(Canvas canvas, Double rpm) {
@@ -1220,7 +1261,7 @@ public final class HudActivity extends Activity {
 
         private void drawControls(Canvas canvas) {
             String[] labels = {mirror ? "MIRROR  ON" : "MIRROR  OFF", demo ? "DEMO  ON" : "DEMO  OFF",
-                    dim ? "NIGHT  ON" : "NIGHT  OFF", "BLUETOOTH SETUP", mapPreview ? "SHOW GAUGES" : "SHOW MAP"};
+                    dim ? "NIGHT  ON" : "NIGHT  OFF", "TRIP LOG", mapPreview ? "SHOW GAUGES" : "SHOW MAP"};
             for (int index = 0; index < labels.length; index++) {
                 float x = CONTROL_LEFT + index * CONTROL_STEP;
                 paint.setStyle(Paint.Style.STROKE);
@@ -1295,7 +1336,7 @@ public final class HudActivity extends Activity {
             float x = (screenX - left) / scale;
             float y = (screenY - top) / scale;
             float mapX = mirror ? 1280 - x : x;
-            if (mapX >= 335 && mapX <= 460 && y >= 495 && y <= 537) return 8;
+            if (mapX >= 1126 && mapX <= 1228 && y >= 39 && y <= 85) return 8;
             if (mapPreview && mapX >= MAP_RANGE_LEFT && mapX <= MAP_MODE_LEFT - 8
                     && y >= 88 && y < MAP_TOP) return 7;
             if (mapPreview && mapX >= MAP_MODE_LEFT - 7 && mapX <= MAP_RIGHT + 4

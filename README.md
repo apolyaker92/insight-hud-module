@@ -6,11 +6,11 @@ An Android HUD for a 2001 Honda Insight (ZE1), built for an Essential PH-1 runni
 
 - Set Insight HUD as the phone's default Home app.
 - Power the phone from an ignition-switched USB charger. The HUD detects external power even when the phone has reached its charge limit.
-- Pair a compatible classic Bluetooth OBD-II adapter in Android, then select it in the HUD's LINK menu. Demo mode can preview the dashboard without a connection.
+- Pair a compatible classic Bluetooth OBD-II adapter in Android, then select it under BT SETUP in the HUD header. Demo mode can preview the dashboard without a connection.
 - Use MIRROR for a reflected display and DIM for night viewing.
 - Disable Android's charging sound if you want only the HUD chime. The HUD holds a fixed landscape orientation.
 - Use SHOW MAP for the Albany and East Greenbush offline map, or SHOW GAUGES to switch back. Tap the map to grant precise foreground location or open Android Location settings. The HUD requests GPS while the real map is visible and accessory power is on. DEMO uses a fictional map and simulated gauges.
-- Pair a Bluetooth keyboard or keypad and assign F1 to View, F2 to Heading, F3 to Range, and F4 to Dim. The map header also has touch controls for range and heading.
+- Pair a Bluetooth keyboard or keypad and assign F1 to View, F2 to Heading, F3 to Range, and F4 to Dim. The map header also has touch controls for range and heading. During a heading transition, the target caption briefly shows the current coordinates, or simulated coordinates in Demo.
 - At accessory power-off, the HUD shows a trip report for a drive with live OBD readings. Open TRIP LOG while parked to see the latest 30 trips. Estimated mileage integrates nearby OBD speed samples and skips gaps. Demo reports are never saved.
 
 On power-up the HUD plays its startup animation and chime and reconnects to the selected adapter. It ignores interruptions shorter than three seconds. A sustained loss closes the Bluetooth OBD session, runs a short standby animation, and blanks the display. Android then sleeps according to its screen timeout. Automatic wake on reconnect depends on the phone's charger-wake behavior. While powered, the HUD can display over Android's lock screen.
