@@ -9,11 +9,11 @@ An Android HUD for a 2001 Honda Insight (ZE1), built for an Essential PH-1 runni
 - Pair a compatible classic Bluetooth OBD-II adapter in Android, then select it in the HUD's LINK menu. Demo mode can preview the dashboard without a connection.
 - Use MIRROR for a reflected display and DIM for night viewing.
 
-On power-up the HUD plays its startup animation and chime and reconnects to the selected adapter. It ignores interruptions shorter than three seconds. A sustained loss closes the Bluetooth OBD session, runs a short standby animation, and blanks the display. Android then sleeps according to its screen timeout. Automatic wake on reconnect depends on the phone's charger-wake behavior and lock-screen settings.
+On power-up the HUD plays its startup animation and chime and reconnects to the selected adapter. It ignores interruptions shorter than three seconds. A sustained loss closes the Bluetooth OBD session, runs a short standby animation, and blanks the display. Android then sleeps according to its screen timeout. Automatic wake on reconnect depends on the phone's charger-wake behavior. While powered, the HUD can display over Android's lock screen.
 
 ## Build the Android app
 
-Run `android/build.ps1 -SdkDirectory <path>` in PowerShell with a JDK on PATH. The script expects Android 35's `android.jar` under `android-35` and the Windows build tools, including `lib/d8.jar` and `lib/apksigner.jar`, under `android-15` in that SDK directory. It creates a local development signing key if one is missing. Keep the same signing key for in-place updates.
+Run `./android/build.ps1 -SdkDirectory <path> -BuildDirectory ./work/hud-build` from the repository root in PowerShell with a JDK on PATH. The script expects Android 35's `android.jar` under `android-35` and the Windows build tools, including `lib/d8.jar` and `lib/apksigner.jar`, under `android-15` in that SDK directory. It creates a local development signing key if one is missing. Keep the same signing key for in-place updates.
 
 ## Print the cradle
 

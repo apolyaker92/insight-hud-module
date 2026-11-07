@@ -168,7 +168,8 @@ public final class HudActivity extends Activity {
     }
 
     private void startTripAnimation() {
-        if (startupPending && foreground && getSystemService(PowerManager.class).isInteractive()) {
+        if (startupPending && foreground && hasWindowFocus()
+                && getSystemService(PowerManager.class).isInteractive()) {
             startupPending = false;
             releaseStartupSound();
             playStartupSound();
@@ -363,7 +364,9 @@ public final class HudActivity extends Activity {
     }
 
     private void updateScreenPower() {
-        if (accessoryActive || shutdownStartedAt != 0) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        boolean drivingDisplay = accessoryActive || shutdownStartedAt != 0;
+        setShowWhenLocked(drivingDisplay);
+        if (drivingDisplay) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
