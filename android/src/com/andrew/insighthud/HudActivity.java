@@ -1302,10 +1302,9 @@ public final class HudActivity extends Activity {
                     MAP_RANGE_LEFT - 12, 118, 11, MUTED, false, Paint.Align.RIGHT);
             drawMapMode(canvas);
             border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
-            text(canvas, "© OpenStreetMap contributors", MAP_LEFT, 469, 12, MUTED, false);
-            String status = mapStatus(region);
+                        String status = mapStatus(region);
             if (headingUp && "GPS FIX".equals(status) && Float.isNaN(gpsCourse)) status = "GPS FIX / WAITING FOR COURSE";
-            text(canvas, status, MAP_RIGHT, 469, 12, AMBER, false, Paint.Align.RIGHT);
+            text(canvas, status, MAP_LEFT, 469, 12, AMBER, false);
             if (region == null) {
                 text(canvas, roadMap.failed() ? "MAP DATA UNAVAILABLE" : "LOADING LOCAL ROADS",
                         MAP_CENTER_X, MAP_CENTER_Y, 19, MUTED, false, Paint.Align.CENTER);
