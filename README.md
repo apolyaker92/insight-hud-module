@@ -8,6 +8,7 @@ An Android HUD for a 2001 Honda Insight (ZE1), built for an Essential PH-1 runni
 - Power the phone from an ignition-switched USB charger. The HUD detects external power even when the phone has reached its charge limit.
 - Pair a compatible classic Bluetooth OBD-II adapter in Android, then select it in the HUD's LINK menu. Demo mode can preview the dashboard without a connection.
 - Use MIRROR for a reflected display and DIM for night viewing.
+- Disable Android's charging sound if you want only the HUD chime. The HUD holds a fixed landscape orientation.
 
 On power-up the HUD plays its startup animation and chime and reconnects to the selected adapter. It ignores interruptions shorter than three seconds. A sustained loss closes the Bluetooth OBD session, runs a short standby animation, and blanks the display. Android then sleeps according to its screen timeout. Automatic wake on reconnect depends on the phone's charger-wake behavior. While powered, the HUD can display over Android's lock screen.
 

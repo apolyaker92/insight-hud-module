@@ -1,11 +1,11 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.andrew.insighthud" android:versionCode="9" android:versionName="2.3">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.andrew.insighthud" android:versionCode="10" android:versionName="2.3">
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
     <application android:label="Insight HUD Module 2.3" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:supportsRtl="false">
-        <activity android:name=".HudActivity" android:exported="true" android:screenOrientation="sensorLandscape" android:launchMode="singleTask">
+        <activity android:name=".HudActivity" android:exported="true" android:screenOrientation="landscape" android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
