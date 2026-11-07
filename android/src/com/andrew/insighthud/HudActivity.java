@@ -139,6 +139,7 @@ public final class HudActivity extends Activity {
     private SoundPool switchSounds;
     private volatile int switchSoundId, shutdownSoundId, switchLoadId, shutdownLoadId;
     private volatile int lockHeadingSoundId, lockNorthSoundId, lockHeadingLoadId, lockNorthLoadId;
+    private volatile int zoomInSoundId, zoomOutSoundId, zoomInLoadId, zoomOutLoadId;
     private static final long STARTUP_DURATION_MS = 2800;
     private static final long POWER_LOSS_DELAY_MS = 3000;
     private static final long SHUTDOWN_DURATION_MS = 1200;
@@ -247,11 +248,15 @@ public final class HudActivity extends Activity {
             else if (sample == shutdownLoadId) shutdownSoundId = sample;
             else if (sample == lockHeadingLoadId) lockHeadingSoundId = sample;
             else if (sample == lockNorthLoadId) lockNorthSoundId = sample;
+            else if (sample == zoomInLoadId) zoomInSoundId = sample;
+            else if (sample == zoomOutLoadId) zoomOutSoundId = sample;
         });
         switchLoadId = switchSounds.load(this, R.raw.switch_click, 1);
         shutdownLoadId = switchSounds.load(this, R.raw.shutdown_chime, 1);
         lockHeadingLoadId = switchSounds.load(this, R.raw.lock_heading, 1);
         lockNorthLoadId = switchSounds.load(this, R.raw.lock_north, 1);
+        zoomInLoadId = switchSounds.load(this, R.raw.zoom_in, 1);
+        zoomOutLoadId = switchSounds.load(this, R.raw.zoom_out, 1);
         preferences = getSharedPreferences("hud", MODE_PRIVATE);
         mirror = preferences.getBoolean("mirror", false);
         brightnessMode = preferences.contains("brightnessMode")
@@ -975,8 +980,16 @@ public final class HudActivity extends Activity {
                 }
                 break;
             case 7:
+                float zoomBefore = RANGE_ZOOM[mapRange];
                 mapRange = (mapRange + 1) % RANGE_NAMES.length;
                 preferences.edit().putInt("mapRange", mapRange).apply();
+                // Sound follows the map's zoom animation, so it only plays while the map is showing.
+                boolean zoomingIn = RANGE_ZOOM[mapRange] > zoomBefore;
+                int zoomSound = zoomingIn ? zoomInSoundId : zoomOutSoundId;
+                if (mapPreview && thermalLevel == THERMAL_NORMAL && zoomSound != 0) {
+                    switchSounds.play(zoomSound, 0.85f, 0.85f, 1, 0, 1);
+                    skipClick = true;
+                }
                 break;
             case 8:
                 showLinkMenu();
