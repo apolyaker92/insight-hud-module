@@ -14,6 +14,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PathMeasure;
@@ -47,10 +48,12 @@ public final class HudActivity extends Activity {
     private boolean mirror;
     private boolean demo;
     private boolean mapPreview;
+    private boolean headingUp;
     private long mapPreviewStartedAt;
     private OfflineRoadMap roadMap;
     private LocationManager locationManager;
     private Location gpsFix;
+    private float gpsCourse = Float.NaN;
     private boolean gpsRegistered;
     private boolean gpsTestActive;
     private static final int GPS_PERMISSION = 24;
@@ -92,6 +95,7 @@ public final class HudActivity extends Activity {
     };
     private final Runnable expireGpsFix = () -> {
         gpsFix = null;
+        gpsCourse = Float.NaN;
         refreshMapTiles();
         hud.invalidate();
     };
@@ -100,6 +104,9 @@ public final class HudActivity extends Activity {
             long age = (SystemClock.elapsedRealtimeNanos() - location.getElapsedRealtimeNanos()) / 1000000;
             if (!gpsRegistered || age >= GPS_STALE_MS || !location.hasAccuracy() || location.getAccuracy() > 100) return;
             gpsFix = location;
+            if (location.hasBearing() && location.hasSpeed() && location.getSpeed() >= 2f) {
+                gpsCourse = location.getBearing();
+            }
             main.removeCallbacks(expireGpsFix);
             main.postDelayed(expireGpsFix, GPS_STALE_MS - Math.max(0, age));
             refreshMapTiles();
@@ -144,6 +151,7 @@ public final class HudActivity extends Activity {
         mirror = preferences.getBoolean("mirror", false);
         dim = preferences.getBoolean("dim", false);
         mapPreview = preferences.getBoolean("mapPreview", false);
+        headingUp = preferences.getBoolean("headingUp", false);
         mapPreviewStartedAt = SystemClock.uptimeMillis();
         getWindow().setNavigationBarColor(Color.BLACK);
         getWindow().setStatusBarColor(Color.BLACK);
@@ -535,6 +543,10 @@ public final class HudActivity extends Activity {
             case 5:
                 enableMapLocation();
                 break;
+            case 6:
+                headingUp = !headingUp;
+                preferences.edit().putBoolean("headingUp", headingUp).apply();
+                break;
             default:
                 return;
         }
@@ -557,8 +569,23 @@ public final class HudActivity extends Activity {
         private static final float MAP_CENTER_X = (MAP_LEFT + MAP_RIGHT) / 2;
         private static final float MAP_CENTER_Y = (MAP_TOP + MAP_BOTTOM) / 2;
         private static final float MAP_TILE_PIXELS = 350;
+        private static final float MAP_MODE_LEFT = 1092;
+        private static final float FORWARD_OFFSET = 82;
+        private static final int MAP_LOCK_MS = 150;
+        private static final int MAP_TRANSITION_MS = 800;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
+        private final Matrix mapTransform = new Matrix();
+        private final float[] mapPoint = new float[2];
+        private float cameraAngle;
+        private float cameraLead;
+        private float cameraStartAngle;
+        private float cameraStartLead;
+        private float cameraTargetAngle;
+        private float cameraTargetLead;
+        private long cameraStartedAt;
+        private int cameraDuration;
+        private boolean cameraMode;
         private final Path sampleLoop = road(106, 258, 150, 225, 190, 155, 260, 131,
                 340, 131, 380, 166, 416, 224, 384, 263, 315, 279, 205, 270, 106, 258);
         private final PathMeasure sampleDrive = new PathMeasure(sampleLoop, false);
@@ -627,7 +654,10 @@ public final class HudActivity extends Activity {
             if (!starting && !shuttingDown) drawControls(canvas);
             canvas.restore();
             if ((starting || shuttingDown) && isShown()) postInvalidateDelayed(80);
-            else if (mapPreview && demo && foreground && powered && hasWindowFocus()) postInvalidateDelayed(100);
+            else if (mapPreview && foreground && hasWindowFocus()) {
+                if (now - cameraStartedAt < cameraDuration) postInvalidateDelayed(32);
+                else if (demo && powered) postInvalidateDelayed(100);
+            }
         }
 
         private void drawShutdown(Canvas canvas, long elapsed) {
@@ -711,7 +741,7 @@ public final class HudActivity extends Activity {
             if (mapPreview && demo) {
                 drawMapPreview(canvas, now);
             } else if (mapPreview) {
-                drawOfflineMap(canvas);
+                drawOfflineMap(canvas, now);
             } else {
                 metric(canvas, "03  COOLANT TEMP", displayed.coolantF, "°F", 117, 100, 250);
                 metric(canvas, "04  INTAKE AIR", displayed.intakeF, "°F", 211, 0, 150);
@@ -739,16 +769,69 @@ public final class HudActivity extends Activity {
             return road;
         }
 
+        private void drawMapMode(Canvas canvas) {
+            border(canvas, MAP_MODE_LEFT, 96, MAP_RIGHT, 124);
+            text(canvas, headingUp ? "HEADING UP" : "NORTH UP", (MAP_MODE_LEFT + MAP_RIGHT) / 2,
+                    115, 13, AMBER, false, Paint.Align.CENTER);
+        }
+
+        private float angleDelta(float from, float to) {
+            return ((to - from) % 360 + 540) % 360 - 180;
+        }
+
+        private void updateMapCamera(long now, float course) {
+            sampleMapCamera(now);
+            boolean modeChanged = cameraMode != headingUp;
+            if (!modeChanged && cameraDuration == MAP_TRANSITION_MS
+                    && now - cameraStartedAt < MAP_TRANSITION_MS) return;
+            boolean follow = headingUp && !Float.isNaN(course);
+            float targetAngle = follow ? -course : 0;
+            float targetLead = follow ? 1 : 0;
+            if (!modeChanged && Math.abs(angleDelta(cameraTargetAngle, targetAngle)) < 1
+                    && cameraTargetLead == targetLead) return;
+            cameraMode = headingUp;
+            cameraStartAngle = cameraAngle;
+            cameraStartLead = cameraLead;
+            cameraTargetAngle = cameraAngle + angleDelta(cameraAngle, targetAngle);
+            cameraTargetLead = targetLead;
+            cameraStartedAt = now;
+            cameraDuration = modeChanged && !Float.isNaN(course) ? MAP_TRANSITION_MS : 360;
+        }
+
+        private void sampleMapCamera(long now) {
+            if (cameraDuration == 0) return;
+            int lock = cameraDuration == MAP_TRANSITION_MS ? MAP_LOCK_MS : 0;
+            float t = Math.max(0, Math.min(1, (float) (now - cameraStartedAt - lock) / (cameraDuration - lock)));
+            float eased = t * t * (3 - 2 * t);
+            cameraAngle = cameraStartAngle + (cameraTargetAngle - cameraStartAngle) * eased;
+            cameraLead = cameraStartLead + (cameraTargetLead - cameraStartLead) * eased;
+        }
+
+        private void setMapTransform(float x, float y, float pixelsPerUnit, float anchorX, float anchorY) {
+            float zoom = 1 + cameraLead * 0.23f;
+            mapTransform.setTranslate(-x, -y);
+            mapTransform.postScale(pixelsPerUnit * zoom, pixelsPerUnit * zoom);
+            mapTransform.postRotate(cameraAngle);
+            mapTransform.postTranslate(anchorX, anchorY);
+        }
+
         private void drawMapPreview(Canvas canvas, long now) {
-            text(canvas, "03  MOVING MAP", 650, 118, 19, AMBER, false);
-            text(canvas, "SIMULATED", 1220, 118, 14, MUTED, false, Paint.Align.RIGHT);
-            border(canvas, 650, 131, 1220, 448);
-            canvas.save();
-            canvas.clipRect(651, 132, 1219, 447);
-            canvas.translate(650, 131);
+            text(canvas, "03  MOVING MAP", MAP_LEFT, 118, 19, AMBER, false);
+            text(canvas, "SIMULATED", MAP_MODE_LEFT - 12, 118, 14, MUTED, false, Paint.Align.RIGHT);
+            drawMapMode(canvas);
+            border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
             float progress = (now - mapPreviewStartedAt) % 24000 / 24000f;
             sampleDrive.getPosTan(progress * sampleDrive.getLength(), marker, direction);
-            canvas.translate((285 - marker[0]) * 0.42f, (160 - marker[1]) * 0.42f);
+            float course = 90 + (float) Math.toDegrees(Math.atan2(direction[1], direction[0]));
+            updateMapCamera(now, course);
+            float anchorX = MAP_CENTER_X + (marker[0] - 285) * 0.58f * (1 - cameraLead);
+            float anchorY = MAP_CENTER_Y + (marker[1] - 160) * 0.58f * (1 - cameraLead)
+                    + FORWARD_OFFSET * cameraLead;
+            setMapTransform(marker[0], marker[1], 1, anchorX, anchorY);
+            canvas.save();
+            canvas.clipRect(MAP_LEFT + 1, MAP_TOP + 1, MAP_RIGHT - 1, MAP_BOTTOM - 1);
+            canvas.save();
+            canvas.concat(mapTransform);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(1.5f);
             paint.setColor(LINE);
@@ -760,41 +843,44 @@ public final class HudActivity extends Activity {
             paint.setColor(MUTED);
             canvas.drawPath(sampleLoop, paint);
             paint.setStyle(Paint.Style.FILL);
-            text(canvas, "ROUTE 08", 420, 76, 14, AMBER, false);
-            text(canvas, "RIVER RD", 43, 179, 12, MUTED, false);
-            text(canvas, "DEPOT AVE", 390, 306, 12, MUTED, false);
-            canvas.translate(marker[0], marker[1]);
-            canvas.rotate((float) Math.toDegrees(Math.atan2(direction[1], direction[0])));
-            paint.setColor(0xFF080602);
-            canvas.drawCircle(0, 0, 19, paint);
-            path.reset();
-            path.moveTo(16, 0);
-            path.lineTo(-11, -10);
-            path.lineTo(-6, 0);
-            path.lineTo(-11, 10);
-            path.close();
-            paint.setColor(AMBER);
-            canvas.drawPath(path, paint);
             canvas.restore();
-            text(canvas, "DEMO ROADS / GPS INACTIVE", 650, 469, 12, MUTED, false);
-            text(canvas, "N UP", 1220, 469, 12, MUTED, false, Paint.Align.RIGHT);
+            demoRoadLabel(canvas, "ROUTE 08", 420, 76, anchorX, anchorY, AMBER);
+            demoRoadLabel(canvas, "RIVER RD", 43, 179, anchorX, anchorY, MUTED);
+            demoRoadLabel(canvas, "DEPOT AVE", 390, 306, anchorX, anchorY, MUTED);
+            drawMapMarker(canvas, anchorX, anchorY, course, now);
+            canvas.restore();
+            text(canvas, "DEMO ROADS / GPS INACTIVE", MAP_LEFT, 469, 12, MUTED, false);
         }
 
-        private void drawOfflineMap(Canvas canvas) {
+        private void demoRoadLabel(Canvas canvas, String name, float x, float y,
+                                   float anchorX, float anchorY, int color) {
+            mapPoint[0] = x;
+            mapPoint[1] = y;
+            mapTransform.mapPoints(mapPoint);
+            if (Math.abs(mapPoint[0] - anchorX) >= 45 || Math.abs(mapPoint[1] - anchorY) >= 27) {
+                text(canvas, name, mapPoint[0], mapPoint[1], 12, color, false, Paint.Align.CENTER);
+            }
+        }
+
+        private void drawOfflineMap(Canvas canvas, long now) {
             OfflineRoadMap.Region region = roadMap.region();
             text(canvas, "03  OFFLINE MAP", MAP_LEFT, 118, 19, AMBER, false);
             text(canvas, region == null ? "ALBANY REGION" : region.name,
-                    MAP_RIGHT, 118, 14, MUTED, false, Paint.Align.RIGHT);
+                    MAP_MODE_LEFT - 12, 118, 14, MUTED, false, Paint.Align.RIGHT);
+            drawMapMode(canvas);
             border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
             text(canvas, "© OpenStreetMap contributors", MAP_LEFT, 469, 12, MUTED, false);
             String status = mapStatus(region);
-            text(canvas, status + "  /  N UP", MAP_RIGHT, 469, 12, AMBER, false, Paint.Align.RIGHT);
+            if (headingUp && "GPS FIX".equals(status) && Float.isNaN(gpsCourse)) status = "GPS FIX / WAITING FOR COURSE";
+            text(canvas, status, MAP_RIGHT, 469, 12, AMBER, false, Paint.Align.RIGHT);
             if (region == null) {
                 text(canvas, roadMap.failed() ? "MAP DATA UNAVAILABLE" : "LOADING LOCAL ROADS",
                         MAP_CENTER_X, MAP_CENTER_Y, 19, MUTED, false, Paint.Align.CENTER);
                 return;
             }
             boolean tracking = fixInRegion(region);
+            float course = tracking ? gpsCourse : Float.NaN;
+            updateMapCamera(now, course);
             double viewX = OfflineRoadMap.tileX(tracking ? gpsFix.getLongitude() : region.longitude);
             double viewY = OfflineRoadMap.tileY(tracking ? gpsFix.getLatitude() : region.latitude);
             OfflineRoadMap.Scene scene = roadMap.scene();
@@ -803,23 +889,24 @@ public final class HudActivity extends Activity {
                         MAP_CENTER_X, MAP_CENTER_Y, 19, MUTED, false, Paint.Align.CENTER);
                 return;
             }
-            float originX = MAP_CENTER_X - (float) (viewX - scene.x) * MAP_TILE_PIXELS;
-            float originY = MAP_CENTER_Y - (float) (viewY - scene.y) * MAP_TILE_PIXELS;
+            float anchorY = MAP_CENTER_Y + FORWARD_OFFSET * cameraLead;
+            setMapTransform((float) (viewX - scene.x), (float) (viewY - scene.y),
+                    MAP_TILE_PIXELS, MAP_CENTER_X, anchorY);
             canvas.save();
             canvas.clipRect(MAP_LEFT + 1, MAP_TOP + 1, MAP_RIGHT - 1, MAP_BOTTOM - 1);
             canvas.save();
-            canvas.translate(originX, originY);
-            canvas.scale(MAP_TILE_PIXELS, MAP_TILE_PIXELS);
+            canvas.concat(mapTransform);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setColor(LINE);
-            paint.setStrokeWidth(1.2f / MAP_TILE_PIXELS);
+            float strokeScale = MAP_TILE_PIXELS * (1 + cameraLead * 0.23f);
+            paint.setStrokeWidth(1.2f / strokeScale);
             canvas.drawPath(scene.roads[0], paint);
             paint.setColor(MUTED);
-            paint.setStrokeWidth(2.1f / MAP_TILE_PIXELS);
+            paint.setStrokeWidth(2.1f / strokeScale);
             canvas.drawPath(scene.roads[1], paint);
             paint.setColor(AMBER);
-            paint.setStrokeWidth(3.1f / MAP_TILE_PIXELS);
+            paint.setStrokeWidth(3.1f / strokeScale);
             canvas.drawPath(scene.roads[2], paint);
             paint.setStrokeCap(Paint.Cap.BUTT);
             paint.setStyle(Paint.Style.FILL);
@@ -828,14 +915,17 @@ public final class HudActivity extends Activity {
             // Keep the reflected display legible by separating labels from each other and the marker.
             int labelCount = 0;
             for (OfflineRoadMap.Label label : scene.labels) {
-                float x = originX + label.x * MAP_TILE_PIXELS;
-                float y = originY + label.y * MAP_TILE_PIXELS;
+                mapPoint[0] = label.x;
+                mapPoint[1] = label.y;
+                mapTransform.mapPoints(mapPoint);
+                float x = mapPoint[0];
+                float y = mapPoint[1];
                 paint.setTypeface(labelFont);
                 paint.setTextSize(13);
                 float halfWidth = paint.measureText(label.name) / 2 + 5;
                 if (x - halfWidth < MAP_LEFT + 4 || x + halfWidth > MAP_RIGHT - 4
                         || y < MAP_TOP + 16 || y > MAP_BOTTOM - 18) continue;
-                if (tracking && Math.abs(x - MAP_CENTER_X) < halfWidth + 24 && Math.abs(y - MAP_CENTER_Y) < 28) continue;
+                if (tracking && Math.abs(x - MAP_CENTER_X) < halfWidth + 30 && Math.abs(y - anchorY) < 32) continue;
                 boolean clear = true;
                 for (int index = 0; index < labelCount; index++) {
                     if (labelNames[index].equals(label.name)
@@ -855,7 +945,7 @@ public final class HudActivity extends Activity {
                 labelWidth[labelCount++] = halfWidth;
                 if (labelCount == labelNames.length) break;
             }
-            if (tracking) drawGpsMarker(canvas);
+            if (tracking) drawMapMarker(canvas, MAP_CENTER_X, anchorY, course, now);
             canvas.restore();
         }
 
@@ -868,14 +958,25 @@ public final class HudActivity extends Activity {
             return gpsTestActive ? "TEST / " + status + " / TAP TO STOP" : status;
         }
 
-        private void drawGpsMarker(Canvas canvas) {
+        private void drawMapMarker(Canvas canvas, float x, float y, float course, long now) {
             canvas.save();
-            canvas.translate(MAP_CENTER_X, MAP_CENTER_Y);
+            canvas.translate(x, y);
             paint.setColor(0xFF080602);
             canvas.drawCircle(0, 0, 19, paint);
+            long elapsed = now - cameraStartedAt;
+            if (cameraDuration == MAP_TRANSITION_MS && elapsed < MAP_TRANSITION_MS) {
+                float fade = Math.min(1, (MAP_TRANSITION_MS - elapsed) / 370f);
+                int reticle = (Math.round(fade * 255) << 24) | (AMBER & 0xFFFFFF);
+                int radius = 22 + Math.max(0, MAP_LOCK_MS - (int) elapsed) / 12;
+                for (int corner = 0; corner < 4; corner++) {
+                    line(canvas, radius - 8, -radius, radius, -radius, reticle);
+                    line(canvas, radius, -radius, radius, -radius + 8, reticle);
+                    canvas.rotate(90);
+                }
+            }
             paint.setColor(AMBER);
-            if (gpsFix.hasBearing() && gpsFix.hasSpeed() && gpsFix.getSpeed() >= 2f) {
-                canvas.rotate(gpsFix.getBearing());
+            if (!Float.isNaN(course)) {
+                canvas.rotate(course + cameraAngle);
                 path.reset();
                 path.moveTo(0, -16);
                 path.lineTo(10, 10);
@@ -1055,6 +1156,8 @@ public final class HudActivity extends Activity {
             float x = (screenX - left) / scale;
             float y = (screenY - top) / scale;
             float mapX = mirror ? 1280 - x : x;
+            if (mapPreview && mapX >= MAP_MODE_LEFT - 7 && mapX <= MAP_RIGHT + 4
+                    && y >= 88 && y < MAP_TOP) return 6;
             if (mapPreview && !demo && mapX >= MAP_LEFT && mapX <= MAP_RIGHT
                     && y >= MAP_TOP && y <= 480
                     && (!hasPreciseLocation() || !gpsEnabled() || (!powered && !accessoryActive))) return 5;
