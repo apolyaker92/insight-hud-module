@@ -129,6 +129,28 @@ public final class ObdTests {
         check("a shown alert waits out a long hold", queue.tick(9100, false) != null);
         check("and still expires afterwards", queue.tick(9100 + 3600, false) == null);
 
+        AutoStopTracker engine = new AutoStopTracker();
+        check("a cold ignition-on (no rpm yet) is silent", engine.update(0d, 0d, true, 0) == AutoStopTracker.Event.NONE);
+        check("the first start is not a restart", engine.update(850d, 0d, true, 1000) == AutoStopTracker.Event.NONE);
+        check("a single zero reading is not enough", engine.update(0d, 0d, true, 2000) == AutoStopTracker.Event.NONE);
+        check("zero rpm that holds at a standstill is an auto-stop", engine.update(0d, 0d, true, 2700) == AutoStopTracker.Event.STOP);
+        check("it only fires once", engine.update(0d, 0d, true, 3500) == AutoStopTracker.Event.NONE);
+        check("rpm returning is a restart", engine.update(800d, 0d, true, 4000) == AutoStopTracker.Event.RESTART);
+        check("and only once", engine.update(900d, 3d, true, 4500) == AutoStopTracker.Event.NONE);
+        AutoStopTracker moving = new AutoStopTracker();
+        moving.update(2000d, 40d, true, 0);
+        moving.update(0d, 40d, true, 1000);
+        check("zero rpm while moving is not an auto-stop", moving.update(0d, 40d, true, 2000) == AutoStopTracker.Event.NONE);
+        AutoStopTracker keyOff = new AutoStopTracker();
+        keyOff.update(850d, 0d, true, 0);
+        keyOff.update(0d, 0d, true, 1000);
+        check("power loss cancels it (key-off)", keyOff.update(0d, 0d, false, 2000) == AutoStopTracker.Event.NONE);
+        AutoStopTracker blip = new AutoStopTracker();
+        blip.update(850d, 0d, true, 0);
+        blip.update(0d, 0d, true, 100);
+        check("a brief dropout that recovers stays silent", blip.update(850d, 0d, true, 300) == AutoStopTracker.Event.NONE);
+        check("missing readings are ignored", new AutoStopTracker().update(null, null, true, 0) == AutoStopTracker.Event.NONE);
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }

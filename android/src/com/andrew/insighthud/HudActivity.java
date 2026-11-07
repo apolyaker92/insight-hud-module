@@ -155,6 +155,8 @@ public final class HudActivity extends Activity {
     // Gauges the car has actually reported this session: throttle, load, MPG inputs, intake air.
     private final boolean[] seenGauge = new boolean[4];
     private final Alerts alerts = new Alerts();
+    private final AutoStopTracker autoStop = new AutoStopTracker();
+    private volatile int autoStopLoadId, autoStartLoadId;
     private static final double WARM_F = 175;  // "operating temperature reached"
     private static final double HOT_F = 230;   // coolant warning; the dash gauge remains authoritative
     private boolean linkLive, failureAnnounced, setupAnnounced, sawCool, warmAnnounced, hotAnnounced, fixAnnounced;
@@ -273,6 +275,8 @@ public final class HudActivity extends Activity {
         alertInfoLoadId = switchSounds.load(this, R.raw.alert_info, 1);
         alertWarnLoadId = switchSounds.load(this, R.raw.alert_warn, 1);
         alertCriticalLoadId = switchSounds.load(this, R.raw.alert_critical, 1);
+        autoStopLoadId = switchSounds.load(this, R.raw.autostop, 1);
+        autoStartLoadId = switchSounds.load(this, R.raw.autostart, 1);
         preferences = getSharedPreferences("hud", MODE_PRIVATE);
         mirror = preferences.getBoolean("mirror", false);
         brightnessMode = preferences.contains("brightnessMode")
@@ -827,6 +831,7 @@ public final class HudActivity extends Activity {
         }
         updateReadings(null);
         linkLive = failureAnnounced = setupAnnounced = false;
+        autoStop.reset();
         failedAttempts = 0;
         java.util.Arrays.fill(seenGauge, false);
         if (obd != null) obd.stop();
@@ -851,6 +856,16 @@ public final class HudActivity extends Activity {
             seenGauge[2] |= update.load != null && update.rpm != null;
             seenGauge[3] |= update.intakeF != null;
             trackCoolant(update.coolantF);
+            if (accessoryActive && !demo) {
+                AutoStopTracker.Event event = autoStop.update(update.rpm, update.speedMph, powered,
+                        SystemClock.elapsedRealtime());
+                if (event != AutoStopTracker.Event.NONE && !parkedBlank && !thermalBlank
+                        && switchSounds != null) {
+                    int id = event == AutoStopTracker.Event.STOP ? autoStopLoadId : autoStartLoadId;
+                    if (loadedSamples.contains(id)) switchSounds.play(id, 0.55f, 0.55f, 1, 0, 1);
+                    Log.i("HudSound", event == AutoStopTracker.Event.STOP ? "auto-stop" : "auto-restart");
+                }
+            }
         }
         if (update == null) {
             trip.disconnect();
