@@ -31,6 +31,7 @@ import android.location.LocationManager;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
+import android.media.MediaTimestamp;
 import android.media.SoundPool;
 import android.os.BatteryManager;
 import android.os.Build;
@@ -40,6 +41,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
@@ -135,7 +137,8 @@ public final class HudActivity extends Activity {
     private long shutdownStartedAt;
     private MediaPlayer startupSound;
     private SoundPool switchSounds;
-    private int switchSoundId;
+    private volatile int switchSoundId, shutdownSoundId, switchLoadId, shutdownLoadId;
+    private volatile int lockHeadingSoundId, lockNorthSoundId, lockHeadingLoadId, lockNorthLoadId;
     private static final long STARTUP_DURATION_MS = 2800;
     private static final long POWER_LOSS_DELAY_MS = 3000;
     private static final long SHUTDOWN_DURATION_MS = 1200;
@@ -233,15 +236,22 @@ public final class HudActivity extends Activity {
         startupPending = state != null && state.getBoolean("startupPending");
         parkedBlank = state != null && state.getBoolean("parkedBlank");
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
-        switchSounds = new SoundPool.Builder().setMaxStreams(1)
+        switchSounds = new SoundPool.Builder().setMaxStreams(2)
                 .setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
                 .build();
         switchSounds.setOnLoadCompleteListener((pool, sample, status) -> {
-            if (pool == switchSounds && status == 0) switchSoundId = sample;
+            if (pool != switchSounds || status != 0) return;
+            if (sample == switchLoadId) switchSoundId = sample;
+            else if (sample == shutdownLoadId) shutdownSoundId = sample;
+            else if (sample == lockHeadingLoadId) lockHeadingSoundId = sample;
+            else if (sample == lockNorthLoadId) lockNorthSoundId = sample;
         });
-        switchSounds.load(this, R.raw.switch_click, 1);
+        switchLoadId = switchSounds.load(this, R.raw.switch_click, 1);
+        shutdownLoadId = switchSounds.load(this, R.raw.shutdown_chime, 1);
+        lockHeadingLoadId = switchSounds.load(this, R.raw.lock_heading, 1);
+        lockNorthLoadId = switchSounds.load(this, R.raw.lock_north, 1);
         preferences = getSharedPreferences("hud", MODE_PRIVATE);
         mirror = preferences.getBoolean("mirror", false);
         brightnessMode = preferences.contains("brightnessMode")
@@ -328,6 +338,7 @@ public final class HudActivity extends Activity {
     @Override protected void onStart() {
         super.onStart();
         foreground = true;
+        main.post(preloadSoundLater);
         updateLightSensor();
         startTripAnimation();
         connectSavedAdapter();
@@ -361,7 +372,6 @@ public final class HudActivity extends Activity {
         if (thermalLevel != THERMAL_HOLD && startupPending && foreground && hasWindowFocus()
                 && getSystemService(PowerManager.class).isInteractive()) {
             startupPending = false;
-            releaseStartupSound();
             playStartupSound();
             hud.invalidate();
         }
@@ -418,6 +428,7 @@ public final class HudActivity extends Activity {
         if (foreground && getSystemService(PowerManager.class).isInteractive()) {
             shutdownStartedAt = SystemClock.uptimeMillis();
             main.postDelayed(finishShutdown, shutdownDuration());
+            if (shutdownSoundId != 0 && switchSounds != null) switchSounds.play(shutdownSoundId, 0.9f, 0.9f, 1, 0, 1);
         } else {
             blankParkedHud();
         }
@@ -489,34 +500,90 @@ public final class HudActivity extends Activity {
         super.onStop();
     }
 
-    private void playStartupSound() {
+    /** Loads the chime ahead of time so power-up never waits on file decoding. */
+    private void preloadStartupSound() {
+        if (startupSound != null) return;
         try {
             AudioAttributes attributes = new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build();
-            startupSound = MediaPlayer.create(this, R.raw.startup_chime, attributes,
+            MediaPlayer player = MediaPlayer.create(this, R.raw.startup_chime, attributes,
                     AudioManager.AUDIO_SESSION_ID_GENERATE);
-            if (startupSound != null) {
-                startupSound.setOnCompletionListener(player -> releaseStartupSound());
-                startupSound.setOnErrorListener((player, error, detail) -> {
-                    releaseStartupSound();
-                    return true;
-                });
-                startupSound.start();
-            }
+            if (player == null) return;
+            player.setOnCompletionListener(done -> releaseStartupSound());
+            player.setOnErrorListener((failed, error, detail) -> {
+                releaseStartupSound();
+                return true;
+            });
+            startupSound = player;
         } catch (IllegalStateException unavailable) {
             releaseStartupSound();
-        } finally {
-            startupStartedAt = SystemClock.uptimeMillis();
         }
     }
 
+    private final Runnable preloadSoundLater = this::preloadStartupSound;
+
+    private void playStartupSound() {
+        preloadStartupSound();
+        MediaPlayer player = startupSound;
+        if (player != null) {
+            try {
+                if (startupPlaying) player.seekTo(0);
+                player.start();
+                startupPlaying = true;
+                Log.i("HudSound", "chime started");
+            } catch (IllegalStateException unavailable) {
+                releaseStartupSound();
+            }
+        }
+        startupClockLogged = false;
+        startupStartedAt = SystemClock.uptimeMillis();
+    }
+
     private void releaseStartupSound() {
+        startupPlaying = false;
         if (startupSound != null) {
             startupSound.release();
             startupSound = null;
         }
+        main.removeCallbacks(preloadSoundLater);
+        if (foreground) main.postDelayed(preloadSoundLater, 400);
+    }
+
+    private boolean startupPlaying;
+    private boolean startupClockLogged;
+
+    /**
+     * Milliseconds into the start animation. While the chime plays this is the audio's own position,
+     * which already includes the output delay, so the picture follows what is heard; otherwise wall time.
+     */
+    private long startupClock(long now) {
+        long wall = now - startupStartedAt;
+        MediaPlayer player = startupSound;
+        if (player != null && startupPlaying) {
+            try {
+                long audioMs = -1;
+                MediaTimestamp stamp = player.getTimestamp();
+                if (stamp != null && stamp.getMediaClockRate() > 0) {
+                    long elapsedNanos = System.nanoTime() - stamp.getAnchorSytemNanoTime();
+                    audioMs = stamp.getAnchorMediaTimeUs() / 1000
+                            + (long) (elapsedNanos / 1e6 * stamp.getMediaClockRate());
+                }
+                if (audioMs < 0) audioMs = player.getCurrentPosition();
+                // Until audio is actually coming out, hold the picture at zero (but never past 400 ms).
+                if (audioMs > 0 || wall < 400) {
+                    if (!startupClockLogged && wall > 1000) {
+                        startupClockLogged = true;
+                        Log.i("HudSound", "audio clock " + audioMs + " ms, wall clock " + wall + " ms");
+                    }
+                    return Math.max(0, audioMs);
+                }
+            } catch (IllegalStateException failed) {
+                Log.i("HudSound", "clock error " + failed);
+            }
+        }
+        return Math.max(0, wall);
     }
 
     private boolean hasBluetoothPermission() {
@@ -859,13 +926,14 @@ public final class HudActivity extends Activity {
         if ((control == 6 || control == 7) && !mapPreview) return true; // Heading and range only act on the map.
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
                 && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD
-                && (startupStartedAt == 0 || SystemClock.uptimeMillis() - startupStartedAt >= STARTUP_DURATION_MS)) {
+                && (startupStartedAt == 0 || startupClock(SystemClock.uptimeMillis()) >= STARTUP_DURATION_MS)) {
             activateControl(control);
         }
         return true;
     }
 
     private void activateControl(int control) {
+        boolean skipClick = false;
         switch (control) {
             case 0:
                 mirror = !mirror;
@@ -898,6 +966,13 @@ public final class HudActivity extends Activity {
             case 6:
                 headingUp = !headingUp;
                 preferences.edit().putBoolean("headingUp", headingUp).apply();
+                // The map's two-step lock-then-swing only runs when a course is known; sound matches it.
+                int lockSound = headingUp ? lockHeadingSoundId : lockNorthSoundId;
+                if (mapPreview && thermalLevel == THERMAL_NORMAL && lockSound != 0
+                        && (demo || (gpsFix != null && !Float.isNaN(gpsCourse)))) {
+                    switchSounds.play(lockSound, 0.9f, 0.9f, 1, 0, 1);
+                    skipClick = true;
+                }
                 break;
             case 7:
                 mapRange = (mapRange + 1) % RANGE_NAMES.length;
@@ -909,7 +984,7 @@ public final class HudActivity extends Activity {
             default:
                 return;
         }
-        if (switchSoundId != 0) switchSounds.play(switchSoundId, 0.42f, 0.42f, 1, 0, 1);
+        if (!skipClick && switchSoundId != 0) switchSounds.play(switchSoundId, 0.42f, 0.42f, 1, 0, 1);
         hud.invalidate();
     }
 
@@ -932,8 +1007,8 @@ public final class HudActivity extends Activity {
         private static final float MAP_MODE_LEFT = 1092;
         private static final float MAP_RANGE_LEFT = 985;
         private static final float FORWARD_OFFSET = 82;
-        private static final int MAP_LOCK_MS = 150;
-        private static final int MAP_TRANSITION_MS = 800;
+        private static final int MAP_LOCK_MS = 350;
+        private static final int MAP_TRANSITION_MS = 1000;
         private static final int TARGET_CAPTION_MS = 1450;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
@@ -1014,7 +1089,7 @@ public final class HudActivity extends Activity {
             canvas.save();
             if (mirror) canvas.scale(-1, 1, 640, 280);
             long now = SystemClock.uptimeMillis();
-            long startupElapsed = now - startupStartedAt;
+            long startupElapsed = startupStartedAt == 0 ? now : startupClock(now);
             boolean starting = startupStartedAt != 0 && startupElapsed < STARTUP_DURATION_MS;
             boolean shuttingDown = shutdownStartedAt != 0;
             boolean thermalHold = thermalLevel == THERMAL_HOLD;
@@ -1027,7 +1102,7 @@ public final class HudActivity extends Activity {
             canvas.restore();
             if ((thermalHold || starting || shuttingDown
                     || (thermalLevel == THERMAL_LIMIT && now - thermalStartedAt < THERMAL_WARNING_MS))
-                    && isShown()) postInvalidateDelayed(80);
+                    && isShown()) postInvalidateDelayed(starting ? 33 : 80);
             else if (thermalLevel == THERMAL_NORMAL && mapPreview && foreground && hasWindowFocus()) {
                 if (now - cameraStartedAt < cameraDuration || now - rangeStartedAt < 500
                         || (lockStartedAt != 0 && now - lockStartedAt < TARGET_CAPTION_MS)) postInvalidateDelayed(32);
@@ -1696,7 +1771,7 @@ public final class HudActivity extends Activity {
                 }
                 return true;
             }
-            if (startupStartedAt != 0 && SystemClock.uptimeMillis() - startupStartedAt < STARTUP_DURATION_MS) {
+            if (startupStartedAt != 0 && startupClock(SystemClock.uptimeMillis()) < STARTUP_DURATION_MS) {
                 if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                     startupStartedAt = 0;
                     releaseStartupSound();
