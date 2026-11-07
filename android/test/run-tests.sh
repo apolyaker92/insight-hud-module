@@ -6,5 +6,6 @@ out="${TMPDIR:-/tmp}/hud-tests"
 rm -rf "$out"
 mkdir -p "$out"
 javac -d "$out" src/com/andrew/insighthud/ObdProtocol.java src/com/andrew/insighthud/SimulatedElm.java \
+    src/com/andrew/insighthud/AutoBrightness.java \
     test/com/andrew/insighthud/ObdTests.java
 java -cp "$out" com.andrew.insighthud.ObdTests

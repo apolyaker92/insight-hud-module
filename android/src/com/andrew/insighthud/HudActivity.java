@@ -20,6 +20,10 @@ import android.graphics.Path;
 import android.graphics.PathMeasure;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.hardware.input.InputManager;
 import android.location.Location;
 import android.location.LocationListener;
@@ -79,7 +83,28 @@ public final class HudActivity extends Activity {
     private static final long GPS_UNAVAILABLE_MS = 20000;
     private static final long GPS_TEST_MS = 5 * 60 * 1000;
     private static final long GPS_RETRY_MS = 5000;
-    private boolean dim;
+    private int brightnessMode; // 0 auto (light sensor), 1 high, 2 medium, 3 low
+    private static final String[] BRIGHTNESS_NAMES = {"AUTO", "HIGH", "MED", "LOW"};
+    private static final float[] BRIGHTNESS_LEVELS = {0f, 1.0f, 0.45f, 0.08f};
+    private SensorManager sensors;
+    private Sensor lightSensor;
+    private boolean lightRegistered;
+    private float autoLevel = 0.45f;
+    private final AutoBrightness autoBrightness = new AutoBrightness();
+    private final SensorEventListener lightListener = new SensorEventListener() {
+        @Override public void onSensorChanged(SensorEvent event) {
+            float level = autoBrightness.update(event.values[0]);
+            if (Math.abs(level - autoLevel) >= 0.02f) {
+                autoLevel = level;
+                if (brightnessMode == 0) {
+                    applyBrightness();
+                    hud.invalidate();
+                }
+            }
+        }
+
+        @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    };
     private int buttonsMode; // 0 auto (hide with a keypad), 1 always show, 2 always hide
     private boolean keypadPresent;
     private InputManager inputManager;
@@ -219,7 +244,11 @@ public final class HudActivity extends Activity {
         switchSounds.load(this, R.raw.switch_click, 1);
         preferences = getSharedPreferences("hud", MODE_PRIVATE);
         mirror = preferences.getBoolean("mirror", false);
-        dim = preferences.getBoolean("dim", false);
+        brightnessMode = preferences.contains("brightnessMode")
+                ? Math.max(0, Math.min(3, preferences.getInt("brightnessMode", 0)))
+                : preferences.getBoolean("dim", false) ? 3 : 0; // The old NIGHT toggle becomes LOW.
+        sensors = getSystemService(SensorManager.class);
+        lightSensor = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_LIGHT);
         buttonsMode = Math.max(0, Math.min(2, preferences.getInt("buttonsMode", 0)));
         mapPreview = preferences.getBoolean("mapPreview", false);
         headingUp = preferences.getBoolean("headingUp", false);
@@ -287,6 +316,7 @@ public final class HudActivity extends Activity {
             getSystemService(PowerManager.class).removeThermalStatusListener(thermalListener);
         }
         if (inputManager != null) inputManager.unregisterInputDeviceListener(inputListener);
+        if (lightRegistered) sensors.unregisterListener(lightListener);
         if (obd != null) obd.destroy();
         switchSounds.release();
         switchSounds = null;
@@ -298,6 +328,7 @@ public final class HudActivity extends Activity {
     @Override protected void onStart() {
         super.onStart();
         foreground = true;
+        updateLightSensor();
         startTripAnimation();
         connectSavedAdapter();
         updateMap();
@@ -445,6 +476,7 @@ public final class HudActivity extends Activity {
 
     @Override protected void onStop() {
         foreground = false;
+        updateLightSensor();
         updateMap();
         releaseStartupSound();
         // Dialogs, permission prompts and Android settings stop the activity; keep the
@@ -673,7 +705,8 @@ public final class HudActivity extends Activity {
                 .setTitle("OBD LINK / " + linkStatus)
                 .setItems(new String[]{"Choose paired OBD adapter", "Pair device / enable Bluetooth",
                         "Forget saved adapter", "Android settings",
-                        "Bottom buttons: " + BUTTON_MODE_NAMES[buttonsMode], "Toggle mirror", "Toggle demo", "Trip log"}, (dialog, choice) -> {
+                        "Bottom buttons: " + BUTTON_MODE_NAMES[buttonsMode], "Toggle mirror", "Toggle demo", "Trip log",
+                        "Brightness: " + BRIGHTNESS_NAMES[brightnessMode]}, (dialog, choice) -> {
                     switch (choice) {
                         case 0:
                             chooseAdapter();
@@ -701,6 +734,9 @@ public final class HudActivity extends Activity {
                             break;
                         case 7:
                             showTripHistory();
+                            break;
+                        case 8:
+                            activateControl(2);
                             break;
                     }
                 }).setNegativeButton("CLOSE", null).show();
@@ -792,10 +828,23 @@ public final class HudActivity extends Activity {
 
     private void applyBrightness() {
         WindowManager.LayoutParams attributes = getWindow().getAttributes();
+        float base = brightnessMode == 0 ? autoLevel : BRIGHTNESS_LEVELS[brightnessMode];
+        // Thermal protection always wins over the chosen level.
         attributes.screenBrightness = thermalLevel == THERMAL_HOLD ? 0.03f
-                : dim ? 0.08f
-                : thermalLevel == THERMAL_LIMIT ? 0.18f : WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+                : thermalLevel == THERMAL_LIMIT ? Math.min(base, 0.18f) : base;
         getWindow().setAttributes(attributes);
+    }
+
+    private void updateLightSensor() {
+        boolean wanted = foreground && brightnessMode == 0 && lightSensor != null;
+        if (wanted == lightRegistered) return;
+        lightRegistered = wanted;
+        if (wanted) {
+            autoBrightness.reset();
+            sensors.registerListener(lightListener, lightSensor, SensorManager.SENSOR_DELAY_NORMAL);
+        } else {
+            sensors.unregisterListener(lightListener);
+        }
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
@@ -829,8 +878,9 @@ public final class HudActivity extends Activity {
                 updateMap();
                 break;
             case 2:
-                dim = !dim;
-                preferences.edit().putBoolean("dim", dim).apply();
+                brightnessMode = (brightnessMode + 1) % BRIGHTNESS_NAMES.length;
+                preferences.edit().putInt("brightnessMode", brightnessMode).apply();
+                updateLightSensor();
                 applyBrightness();
                 break;
             case 3:
@@ -1132,6 +1182,9 @@ public final class HudActivity extends Activity {
 
             line(canvas, 40, footer, 1240, footer, LINE);
             text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
+            text(canvas, "BRIGHT " + BRIGHTNESS_NAMES[brightnessMode] + (brightnessMode == 0
+                    ? "  " + Math.round(autoLevel * 100) + "%" : ""), 640, footer + 56, 12, MUTED, false,
+                    Paint.Align.CENTER);
             String adapterName = preferences.getString("adapterName", "NO ADAPTER SELECTED");
             if (adapterName.length() > 28) adapterName = adapterName.substring(0, 28);
             text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 56, 12, MUTED, false);
@@ -1544,7 +1597,7 @@ public final class HudActivity extends Activity {
 
         private void drawControls(Canvas canvas) {
             String[] labels = {mirror ? "MIRROR  ON" : "MIRROR  OFF", demo ? "DEMO  ON" : "DEMO  OFF",
-                    dim ? "NIGHT  ON" : "NIGHT  OFF", "TRIP LOG", mapPreview ? "SHOW GAUGES" : "SHOW MAP"};
+                    "BRIGHT  " + BRIGHTNESS_NAMES[brightnessMode], "TRIP LOG", mapPreview ? "SHOW GAUGES" : "SHOW MAP"};
             for (int index = 0; index < labels.length; index++) {
                 float x = CONTROL_LEFT + index * CONTROL_STEP;
                 paint.setStyle(Paint.Style.STROKE);

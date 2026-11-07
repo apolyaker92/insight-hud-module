@@ -74,6 +74,27 @@ public final class ObdTests {
         try { in.available(); } catch (IOException expected) { threw = true; }
         check("closed adapter throws like a dropped link", threw);
 
+        check("pitch dark sits at the floor", AutoBrightness.levelFor(0f) == 0.04f);
+        check("dusk is dim", AutoBrightness.levelFor(30f) < 0.2f);
+        check("overcast day is bright", AutoBrightness.levelFor(10_000f) > 0.8f);
+        check("direct sun is full", AutoBrightness.levelFor(100_000f) == 1.0f);
+        boolean rising = true;
+        float last = 0;
+        for (float lux = 1; lux < 100_000; lux *= 1.3f) {
+            float level = AutoBrightness.levelFor(lux);
+            rising &= level >= last;
+            last = level;
+        }
+        check("brightness never falls as light rises", rising);
+        AutoBrightness smoother = new AutoBrightness();
+        float dark = smoother.update(2f);
+        float afterOneSunnySample = smoother.update(50_000f);
+        float afterManySamples = afterOneSunnySample;
+        for (int i = 0; i < 30; i++) afterManySamples = smoother.update(50_000f);
+        check("first sample is taken as-is", dark == AutoBrightness.levelFor(2f));
+        check("a single bright flash does not jump to full", afterOneSunnySample < 0.6f);
+        check("sustained light does reach full", afterManySamples > 0.95f);
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }
