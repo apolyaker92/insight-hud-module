@@ -16,6 +16,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PathMeasure;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.media.AudioAttributes;
@@ -42,6 +43,8 @@ public final class HudActivity extends Activity {
     private HudView hud;
     private boolean mirror;
     private boolean demo;
+    private boolean mapPreview;
+    private long mapPreviewStartedAt;
     private boolean dim;
     private boolean powered;
     private boolean powerKnown;
@@ -97,6 +100,8 @@ public final class HudActivity extends Activity {
         preferences = getSharedPreferences("hud", MODE_PRIVATE);
         mirror = preferences.getBoolean("mirror", false);
         dim = preferences.getBoolean("dim", false);
+        mapPreview = preferences.getBoolean("mapPreview", false);
+        mapPreviewStartedAt = SystemClock.uptimeMillis();
         getWindow().setNavigationBarColor(Color.BLACK);
         getWindow().setStatusBarColor(Color.BLACK);
         hud = new HudView(this);
@@ -395,6 +400,11 @@ public final class HudActivity extends Activity {
             case 3:
                 showLinkMenu();
                 break;
+            case 4:
+                mapPreview = !mapPreview;
+                mapPreviewStartedAt = SystemClock.uptimeMillis();
+                preferences.edit().putBoolean("mapPreview", mapPreview).apply();
+                break;
             default:
                 return;
         }
@@ -406,8 +416,32 @@ public final class HudActivity extends Activity {
         private static final int MUTED = 0xFFB1874B;
         private static final int LINE = 0xFF61451F;
         private static final int UNLIT = 0xFF1D160A;
+        private static final int CONTROL_LEFT = 48;
+        private static final int CONTROL_STEP = 240;
+        private static final int CONTROL_WIDTH = 224;
+        private static final int CONTROL_COUNT = 5;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
+        private final Path sampleLoop = road(106, 258, 150, 225, 190, 155, 260, 131,
+                340, 131, 380, 166, 416, 224, 384, 263, 315, 279, 205, 270, 106, 258);
+        private final PathMeasure sampleDrive = new PathMeasure(sampleLoop, false);
+        private final float[] marker = new float[2];
+        private final float[] direction = new float[2];
+        private final Path[] sampleStreets = {
+                road(-70, 26, 136, 53, 200, 82, 358, 70, 440, 28, 640, 9),
+                road(-55, 100, 102, 115, 190, 155, 276, 183, 360, 188, 458, 166, 644, 155),
+                road(-35, 196, 80, 188, 150, 225, 231, 238, 336, 229, 416, 224, 491, 264, 638, 285),
+                road(-40, 320, 98, 300, 205, 270, 224, 348, 293, 400),
+                road(19, -55, 50, 59, 45, 111, 80, 188, 69, 245, 106, 258, 98, 300, 108, 401),
+                road(133, -55, 136, 53, 102, 115, 115, 164, 150, 225),
+                road(238, -50, 200, 82, 260, 131, 276, 183, 231, 238, 205, 270),
+                road(360, -52, 358, 70, 340, 131, 360, 188, 336, 229, 315, 279, 338, 396),
+                road(473, -35, 440, 28, 428, 102, 458, 166, 416, 224),
+                road(567, -35, 527, 72, 520, 159, 491, 264, 510, 405),
+                road(224, 348, 315, 325, 384, 263, 432, 321, 510, 342, 633, 354)
+        };
+        private final Path sampleHighway = road(-60, 309, 58, 278, 106, 258, 150, 225,
+                190, 155, 260, 131, 340, 131, 419, 117, 509, 90, 642, 53);
         private final RectF rectangle = new RectF();
         private final Typeface labelFont = Typeface.create("monospace", Typeface.NORMAL);
         private final Typeface boldFont = Typeface.create("monospace", Typeface.BOLD);
@@ -422,7 +456,7 @@ public final class HudActivity extends Activity {
             // The PH-1's legacy GPU driver drops cached text on state changes.
             // Rasterize this static instrument only when its data changes.
             setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-            setContentDescription("Insight HUD Module 2.3. Vehicle speed in miles per hour, engine RPM history, coolant temperature, intake air temperature, OBD port voltage, and engine load. Bottom controls toggle mirror, demo, night brightness, and settings.");
+            setContentDescription("Insight HUD Module 2.3. Speed and RPM history on the left. Gauges or a simulated road map on the right. Bottom controls toggle mirror, demo, night brightness, Bluetooth setup, and map preview.");
             setFocusable(true);
         }
 
@@ -447,11 +481,12 @@ public final class HudActivity extends Activity {
             boolean shuttingDown = shutdownStartedAt != 0;
             if (shuttingDown) drawShutdown(canvas, now - shutdownStartedAt);
             else if (starting) drawStartup(canvas, startupElapsed);
-            else drawGauges(canvas);
+            else drawGauges(canvas, now);
             canvas.restore();
             if (!starting && !shuttingDown) drawControls(canvas);
             canvas.restore();
             if ((starting || shuttingDown) && isShown()) postInvalidateDelayed(80);
+            else if (mapPreview && foreground && powered && hasWindowFocus()) postInvalidateDelayed(100);
         }
 
         private void drawShutdown(Canvas canvas, long elapsed) {
@@ -515,7 +550,7 @@ public final class HudActivity extends Activity {
             text(canvas, "TAP TO SKIP", 1210, 530, 13, MUTED, false, Paint.Align.RIGHT);
         }
 
-        private void drawGauges(Canvas canvas) {
+        private void drawGauges(Canvas canvas, long now) {
             ObdBluetooth.Readings displayed = demo ? DEMO_READINGS : readings;
             if (displayed == null) displayed = EMPTY_READINGS;
             border(canvas, 40, 34, 1240, 552);
@@ -532,10 +567,14 @@ public final class HudActivity extends Activity {
             drawRpmTrace(canvas, displayed.rpm);
 
             line(canvas, 620, 88, 620, 480, LINE);
-            metric(canvas, "03  COOLANT TEMP", displayed.coolantF, "°F", 117, 100, 250);
-            metric(canvas, "04  INTAKE AIR", displayed.intakeF, "°F", 211, 0, 150);
-            metric(canvas, "05  OBD PORT VOLTAGE", displayed.voltage, "V", 305, 9, 16);
-            metric(canvas, "06  ENGINE LOAD", displayed.load, "%", 399, 0, 100);
+            if (mapPreview) {
+                drawMapPreview(canvas, now);
+            } else {
+                metric(canvas, "03  COOLANT TEMP", displayed.coolantF, "°F", 117, 100, 250);
+                metric(canvas, "04  INTAKE AIR", displayed.intakeF, "°F", 211, 0, 150);
+                metric(canvas, "05  OBD PORT VOLTAGE", displayed.voltage, "V", 305, 9, 16);
+                metric(canvas, "06  ENGINE LOAD", displayed.load, "%", 399, 0, 100);
+            }
 
             line(canvas, 40, 480, 1240, 480, LINE);
             text(canvas, "ZE1 / MODULE 2.3", 60, 510, 15, AMBER, false);
@@ -546,6 +585,56 @@ public final class HudActivity extends Activity {
                     + Math.round(batteryTemperature) + " C";
             text(canvas, "PHONE " + phoneState, 1220, 511, 14, MUTED, false, Paint.Align.RIGHT);
             text(canvas, powered ? "EXT POWER" : "BATTERY POWER", 1220, 536, 12, MUTED, false, Paint.Align.RIGHT);
+        }
+
+        private Path road(float... points) {
+            Path road = new Path();
+            road.moveTo(points[0], points[1]);
+            for (int index = 2; index < points.length; index += 2) {
+                road.lineTo(points[index], points[index + 1]);
+            }
+            return road;
+        }
+
+        private void drawMapPreview(Canvas canvas, long now) {
+            text(canvas, "03  MOVING MAP", 650, 118, 19, AMBER, false);
+            text(canvas, "SIMULATED", 1220, 118, 14, MUTED, false, Paint.Align.RIGHT);
+            border(canvas, 650, 131, 1220, 448);
+            canvas.save();
+            canvas.clipRect(651, 132, 1219, 447);
+            canvas.translate(650, 131);
+            float progress = (now - mapPreviewStartedAt) % 24000 / 24000f;
+            sampleDrive.getPosTan(progress * sampleDrive.getLength(), marker, direction);
+            canvas.translate((285 - marker[0]) * 0.42f, (160 - marker[1]) * 0.42f);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.5f);
+            paint.setColor(LINE);
+            for (Path street : sampleStreets) canvas.drawPath(street, paint);
+            paint.setStrokeWidth(4);
+            paint.setColor(MUTED);
+            canvas.drawPath(sampleHighway, paint);
+            paint.setStrokeWidth(2);
+            paint.setColor(MUTED);
+            canvas.drawPath(sampleLoop, paint);
+            paint.setStyle(Paint.Style.FILL);
+            text(canvas, "ROUTE 08", 420, 76, 14, AMBER, false);
+            text(canvas, "RIVER RD", 43, 179, 12, MUTED, false);
+            text(canvas, "DEPOT AVE", 390, 306, 12, MUTED, false);
+            canvas.translate(marker[0], marker[1]);
+            canvas.rotate((float) Math.toDegrees(Math.atan2(direction[1], direction[0])));
+            paint.setColor(0xFF080602);
+            canvas.drawCircle(0, 0, 19, paint);
+            path.reset();
+            path.moveTo(16, 0);
+            path.lineTo(-11, -10);
+            path.lineTo(-6, 0);
+            path.lineTo(-11, 10);
+            path.close();
+            paint.setColor(AMBER);
+            canvas.drawPath(path, paint);
+            canvas.restore();
+            text(canvas, "DEMO ROADS / GPS INACTIVE", 650, 469, 12, MUTED, false);
+            text(canvas, "N UP", 1220, 469, 12, MUTED, false, Paint.Align.RIGHT);
         }
 
         private void drawRpmTrace(Canvas canvas, Double rpm) {
@@ -639,16 +728,16 @@ public final class HudActivity extends Activity {
 
         private void drawControls(Canvas canvas) {
             String[] labels = {mirror ? "MIRROR  ON" : "MIRROR  OFF", demo ? "DEMO  ON" : "DEMO  OFF",
-                    dim ? "NIGHT  ON" : "NIGHT  OFF", "BLUETOOTH SETUP"};
+                    dim ? "NIGHT  ON" : "NIGHT  OFF", "BLUETOOTH SETUP", mapPreview ? "SHOW GAUGES" : "SHOW MAP"};
             for (int index = 0; index < labels.length; index++) {
-                float x = 48 + index * 300;
+                float x = CONTROL_LEFT + index * CONTROL_STEP;
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setStrokeWidth(1.5f);
                 paint.setColor(pressedControl == index ? AMBER : LINE);
-                rectangle.set(x, 570, x + 284, 620);
+                rectangle.set(x, 570, x + CONTROL_WIDTH, 620);
                 canvas.drawRect(rectangle, paint);
                 paint.setStyle(Paint.Style.FILL);
-                text(canvas, labels[index], x + 142, 601, 15,
+                text(canvas, labels[index], x + CONTROL_WIDTH / 2f, 601, 15,
                         index == 1 && demo ? AMBER : MUTED, false, Paint.Align.CENTER);
             }
         }
@@ -713,9 +802,9 @@ public final class HudActivity extends Activity {
         private int controlAt(float screenX, float screenY) {
             float x = (screenX - left) / scale;
             float y = (screenY - top) / scale;
-            if (y < 570 || y > 620 || x < 48) return -1;
-            int index = (int) ((x - 48) / 300);
-            if (index > 3 || x > 48 + index * 300 + 284) return -1;
+            if (y < 570 || y > 620 || x < CONTROL_LEFT) return -1;
+            int index = (int) ((x - CONTROL_LEFT) / CONTROL_STEP);
+            if (index >= CONTROL_COUNT || x > CONTROL_LEFT + index * CONTROL_STEP + CONTROL_WIDTH) return -1;
             return index;
         }
 
