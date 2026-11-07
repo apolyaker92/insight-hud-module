@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothSocket;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.Log;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -30,6 +31,8 @@ final class ObdBluetooth {
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
     private volatile Session current;
     private Future<?> job;
+    private volatile String[] pendingProbe;
+    private static final String PROBE_TAG = "HudObdProbe";
 
     interface Listener {
         void onUpdate(String status, Readings readings);
@@ -42,8 +45,19 @@ final class ObdBluetooth {
         final Double intakeF;
         final Double voltage;
         final Double load;
+        /** IMA pack state of charge in percent, when a verified source supplies it. */
+        final Double imaCharge;
+        /** IMA pack current in amps: positive is assist, negative is regen. */
+        final Double imaAmps;
 
         Readings(Double speedMph, Double rpm, Double coolantF, Double intakeF, Double voltage, Double load) {
+            this(speedMph, rpm, coolantF, intakeF, voltage, load, null, null);
+        }
+
+        Readings(Double speedMph, Double rpm, Double coolantF, Double intakeF, Double voltage, Double load,
+                 Double imaCharge, Double imaAmps) {
+            this.imaCharge = imaCharge;
+            this.imaAmps = imaAmps;
             this.speedMph = speedMph;
             this.rpm = rpm;
             this.coolantF = coolantF;
@@ -78,6 +92,11 @@ final class ObdBluetooth {
         Session session = new Session(address);
         current = session;
         job = worker.submit(() -> run(session));
+    }
+
+    /** Queues read-only raw requests (already validated by the caller); results go to logcat. */
+    void probe(String[] requests) {
+        pendingProbe = requests;
     }
 
     /** True while a session for this adapter address is active (connecting, linked or retrying). */
@@ -177,6 +196,14 @@ final class ObdBluetooth {
         boolean hasInputs = speedSupported || rpmSupported || ObdProtocol.supports(supported, 5)
                 || ObdProtocol.supports(supported, 15) || ObdProtocol.supports(supported, 4);
         while (!session.cancelled) {
+            String[] probe = pendingProbe;
+            if (probe != null) {
+                pendingProbe = null;
+                for (String request : probe) {
+                    String reply = command(session, request, 4000).trim().replaceAll("[\r\n]+", " | ");
+                    Log.i(PROBE_TAG, request + " -> " + reply);
+                }
+            }
             Double coolant = ObdProtocol.supports(supported, 5)
                     ? ObdProtocol.temperatureF(command(session, "0105", 2000), 5) : null;
             Double intake = ObdProtocol.supports(supported, 15)

@@ -20,6 +20,7 @@ import android.graphics.Path;
 import android.graphics.PathMeasure;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.hardware.input.InputManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -35,6 +36,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
 import android.view.View;
@@ -43,6 +45,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 import java.text.DateFormat;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -77,6 +80,15 @@ public final class HudActivity extends Activity {
     private static final long GPS_TEST_MS = 5 * 60 * 1000;
     private static final long GPS_RETRY_MS = 5000;
     private boolean dim;
+    private int buttonsMode; // 0 auto (hide with a keypad), 1 always show, 2 always hide
+    private boolean keypadPresent;
+    private InputManager inputManager;
+    private final InputManager.InputDeviceListener inputListener = new InputManager.InputDeviceListener() {
+        @Override public void onInputDeviceAdded(int id) { updateKeypad(); }
+        @Override public void onInputDeviceRemoved(int id) { updateKeypad(); }
+        @Override public void onInputDeviceChanged(int id) { updateKeypad(); }
+    };
+    private static final String[] BUTTON_MODE_NAMES = {"AUTO", "ALWAYS SHOW", "ALWAYS HIDE"};
     private boolean powered;
     private boolean powerKnown;
     private boolean accessoryActive;
@@ -107,7 +119,7 @@ public final class HudActivity extends Activity {
     private BluetoothAdapter bluetooth;
     private ObdBluetooth obd;
     private ObdBluetooth.Readings readings;
-    private static final ObdBluetooth.Readings DEMO_READINGS = new ObdBluetooth.Readings(46d, 2400d, 188d, 85d, 13.8d, 42d);
+    private static final ObdBluetooth.Readings DEMO_READINGS = new ObdBluetooth.Readings(46d, 2400d, 188d, 85d, 13.8d, 42d, 68d, 35d);
     private static final ObdBluetooth.Readings EMPTY_READINGS = new ObdBluetooth.Readings(null, null, null, null, null, null);
     private static final float[] DEMO_RPM = {820, 880, 1100, 1550, 2250, 3250, 4500, 5000, 3550, 2950,
             3050, 3450, 4200, 4700, 3150, 2680, 2530, 2420, 2450, 2400};
@@ -206,6 +218,7 @@ public final class HudActivity extends Activity {
         preferences = getSharedPreferences("hud", MODE_PRIVATE);
         mirror = preferences.getBoolean("mirror", false);
         dim = preferences.getBoolean("dim", false);
+        buttonsMode = Math.max(0, Math.min(2, preferences.getInt("buttonsMode", 0)));
         mapPreview = preferences.getBoolean("mapPreview", false);
         headingUp = preferences.getBoolean("headingUp", false);
         mapRange = Math.max(0, Math.min(RANGE_NAMES.length - 1, preferences.getInt("mapRange", 0)));
@@ -214,6 +227,9 @@ public final class HudActivity extends Activity {
         getWindow().setStatusBarColor(Color.BLACK);
         hud = new HudView(this);
         setContentView(hud);
+        inputManager = getSystemService(InputManager.class);
+        if (inputManager != null) inputManager.registerInputDeviceListener(inputListener, main);
+        updateKeypad();
         locationManager = getSystemService(LocationManager.class);
         roadMap = new OfflineRoadMap(this, () -> {
             refreshMapTiles();
@@ -268,6 +284,7 @@ public final class HudActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 29 && thermalListener != null) {
             getSystemService(PowerManager.class).removeThermalStatusListener(thermalListener);
         }
+        if (inputManager != null) inputManager.unregisterInputDeviceListener(inputListener);
         if (obd != null) obd.destroy();
         switchSounds.release();
         switchSounds = null;
@@ -558,6 +575,46 @@ public final class HudActivity extends Activity {
         return gpsFix != null && region.contains(gpsFix.getLatitude(), gpsFix.getLongitude());
     }
 
+    /** A keypad that provides F1-F4 replaces the on-screen buttons. */
+    private void updateKeypad() {
+        boolean found = false;
+        for (int id : InputDevice.getDeviceIds()) {
+            InputDevice device = InputDevice.getDevice(id);
+            if (device == null || device.isVirtual()
+                    || (device.getSources() & InputDevice.SOURCE_KEYBOARD) != InputDevice.SOURCE_KEYBOARD) continue;
+            boolean[] keys = device.hasKeys(KeyEvent.KEYCODE_F1, KeyEvent.KEYCODE_F2,
+                    KeyEvent.KEYCODE_F3, KeyEvent.KEYCODE_F4);
+            if (keys[0] && keys[1] && keys[2] && keys[3]) {
+                found = true;
+                break;
+            }
+        }
+        if (found != keypadPresent) {
+            keypadPresent = found;
+            if (hud != null) hud.invalidate();
+        }
+    }
+
+    private boolean controlsHidden() {
+        return buttonsMode == 2 || (buttonsMode == 0 && keypadPresent);
+    }
+
+    private static final Pattern PROBE_REQUEST = Pattern.compile("(01|02|09|21|22)[0-9A-F]{2,6}");
+
+    /** Read-only raw OBD requests from `am start --es obd_probe 2101,2102`; replies go to logcat. */
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String requested = intent == null ? null : intent.getStringExtra("obd_probe");
+        if (requested == null || obd == null) return;
+        List<String> accepted = new ArrayList<>();
+        for (String request : requested.toUpperCase(Locale.US).split(",")) {
+            String trimmed = request.trim();
+            if (PROBE_REQUEST.matcher(trimmed).matches() && accepted.size() < 32) accepted.add(trimmed);
+        }
+        if (!accepted.isEmpty()) obd.probe(accepted.toArray(new String[0]));
+    }
+
     private boolean keepObdInBackground() {
         return accessoryActive && powered && !demo && thermalLevel != THERMAL_HOLD;
     }
@@ -605,7 +662,8 @@ public final class HudActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle("OBD LINK / " + linkStatus)
                 .setItems(new String[]{"Choose paired OBD adapter", "Pair device / enable Bluetooth",
-                        "Forget saved adapter", "Android settings"}, (dialog, choice) -> {
+                        "Forget saved adapter", "Android settings",
+                        "Bottom buttons: " + BUTTON_MODE_NAMES[buttonsMode], "Toggle mirror", "Toggle demo", "Trip log"}, (dialog, choice) -> {
                     switch (choice) {
                         case 0:
                             chooseAdapter();
@@ -619,6 +677,20 @@ public final class HudActivity extends Activity {
                             break;
                         case 3:
                             startActivity(new Intent(Settings.ACTION_SETTINGS));
+                            break;
+                        case 4:
+                            buttonsMode = (buttonsMode + 1) % BUTTON_MODE_NAMES.length;
+                            preferences.edit().putInt("buttonsMode", buttonsMode).apply();
+                            hud.invalidate();
+                            break;
+                        case 5:
+                            activateControl(0);
+                            break;
+                        case 6:
+                            activateControl(1);
+                            break;
+                        case 7:
+                            showTripHistory();
                             break;
                     }
                 }).setNegativeButton("CLOSE", null).show();
@@ -845,6 +917,9 @@ public final class HudActivity extends Activity {
         private int pressedControl = -1;
         private final int[] digitSegments = {63, 6, 91, 79, 102, 109, 125, 7, 127, 111};
 
+        /** Rows freed when the on-screen buttons are hidden; the frame grows by this much. */
+        private float extra() { return controlsHidden() ? 60 : 0; }
+
         HudView(Context context) {
             super(context);
             // The PH-1's legacy GPU driver drops cached text on state changes.
@@ -879,7 +954,7 @@ public final class HudActivity extends Activity {
             else if (starting) drawStartup(canvas, startupElapsed);
             else drawGauges(canvas, now);
             canvas.restore();
-            if (!starting && !shuttingDown && !thermalHold) drawControls(canvas);
+            if (!starting && !shuttingDown && !thermalHold && extra() == 0) drawControls(canvas);
             canvas.restore();
             if ((thermalHold || starting || shuttingDown
                     || (thermalLevel == THERMAL_LIMIT && now - thermalStartedAt < THERMAL_WARNING_MS))
@@ -892,7 +967,7 @@ public final class HudActivity extends Activity {
         }
 
         private void drawThermalWarning(Canvas canvas, long now) {
-            border(canvas, 40, 34, 1240, 552);
+            border(canvas, 40, 34, 1240, 552 + extra());
             text(canvas, "INSIGHT / HUD MODULE 2.3", 60, 69, 17, MUTED, false);
             text(canvas, "THERMAL PROTECTION", 1220, 69, 17, AMBER, false, Paint.Align.RIGHT);
             line(canvas, 40, 88, 1240, 88, LINE);
@@ -930,7 +1005,7 @@ public final class HudActivity extends Activity {
         }
 
         private void drawShutdown(Canvas canvas, long elapsed) {
-            border(canvas, 40, 34, 1240, 552);
+            border(canvas, 40, 34, 1240, 552 + extra());
             text(canvas, "INSIGHT / HUD MODULE 2.3", 60, 69, 17, MUTED, false);
             line(canvas, 40, 88, 1240, 88, LINE);
             if (shutdownReport == null) {
@@ -959,7 +1034,7 @@ public final class HudActivity extends Activity {
         }
 
         private void drawStartup(Canvas canvas, long elapsed) {
-            border(canvas, 40, 34, 1240, 552);
+            border(canvas, 40, 34, 1240, 552 + extra());
             text(canvas, "INSIGHT / HUD MODULE 2.3", 60, 69, 17, MUTED, false);
             text(canvas, "SYSTEM START", 1220, 69, 17, AMBER, false, Paint.Align.RIGHT);
             line(canvas, 40, 88, 1240, 88, LINE);
@@ -1008,7 +1083,7 @@ public final class HudActivity extends Activity {
         private void drawGauges(Canvas canvas, long now) {
             ObdBluetooth.Readings displayed = demo ? DEMO_READINGS : readings;
             if (displayed == null) displayed = EMPTY_READINGS;
-            border(canvas, 40, 34, 1240, 552);
+            border(canvas, 40, 34, 1240, 552 + extra());
             text(canvas, "INSIGHT", 60, 69, 24, AMBER, true);
             text(canvas, "HUD MODULE 2.3", 230, 68, 16, MUTED, false);
             text(canvas, demo ? "[ DEMO - SIMULATED ]" : "[ " + linkStatus + " ]",
@@ -1024,7 +1099,8 @@ public final class HudActivity extends Activity {
             drawWarmup(canvas, displayed.coolantF);
             drawRpmTrace(canvas, displayed.rpm);
 
-            line(canvas, 620, 88, 620, 480, LINE);
+            float footer = 480 + extra();
+            line(canvas, 620, 88, 620, footer, LINE);
             if (thermalLevel == THERMAL_LIMIT) {
                 drawThermalLimit(canvas, now);
             } else if (mapPreview && demo) {
@@ -1037,15 +1113,59 @@ public final class HudActivity extends Activity {
                 metric(canvas, "05  ENGINE LOAD", displayed.load, "%", 366, 0, 100);
             }
 
-            line(canvas, 40, 480, 1240, 480, LINE);
-            text(canvas, "ZE1 / MODULE 2.3", 60, 510, 15, AMBER, false);
+            if (extra() > 0) drawImaStrip(canvas, displayed);
+            line(canvas, 40, footer, 1240, footer, LINE);
+            text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
+            if (extra() == 0) text(canvas, imaSummary(displayed), 640, footer + 31, 14, AMBER, false, Paint.Align.CENTER);
             String adapterName = preferences.getString("adapterName", "NO ADAPTER SELECTED");
             if (adapterName.length() > 28) adapterName = adapterName.substring(0, 28);
-            text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, 536, 12, MUTED, false);
+            text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 56, 12, MUTED, false);
             String phoneState = (battery < 0 ? "--" : String.valueOf(battery)) + "%  /  "
                     + Math.round(batteryTemperature) + " C";
-            text(canvas, "PHONE " + phoneState, 1220, 511, 14, MUTED, false, Paint.Align.RIGHT);
-            text(canvas, powered ? "EXT POWER" : "BATTERY POWER", 1220, 536, 12, MUTED, false, Paint.Align.RIGHT);
+            text(canvas, "PHONE " + phoneState, 1220, footer + 31, 14, MUTED, false, Paint.Align.RIGHT);
+            text(canvas, powered ? "EXT POWER" : "BATTERY POWER", 1220, footer + 56, 12, MUTED, false, Paint.Align.RIGHT);
+        }
+
+        private String imaSummary(ObdBluetooth.Readings reading) {
+            if (reading.imaCharge == null) return "IMA --";
+            String flow = reading.imaAmps == null ? "" : reading.imaAmps >= 0 ? "  ASSIST " : "  REGEN ";
+            return "IMA " + Math.round(reading.imaCharge) + "%"
+                    + (reading.imaAmps == null ? "" : flow + Math.round(Math.abs(reading.imaAmps)) + "A");
+        }
+
+        /** Pack charge and assist/regen flow, shown with the map or gauges when the buttons are hidden. */
+        private void drawImaStrip(Canvas canvas, ObdBluetooth.Readings reading) {
+            float top = 484;
+            text(canvas, "04  IMA PACK", 650, top + 14, 17, AMBER, false);
+            Double charge = reading.imaCharge;
+            text(canvas, charge == null ? "--%" : Math.round(charge) + "%", 935, top + 40, 22, AMBER, true,
+                    Paint.Align.RIGHT);
+            int segments = 10;
+            int lit = charge == null ? 0 : (int) Math.round(segments * Math.max(0, Math.min(100, charge)) / 100);
+            for (int index = 0; index < segments; index++) {
+                paint.setColor(index < lit ? AMBER : UNLIT);
+                float x = 650 + index * 24;
+                canvas.drawRect(x, top + 22, x + 20, top + 44, paint);
+            }
+            // Assist/regen: zero in the middle, regen fills left, assist fills right.
+            float centerX = 1085, half = 130, barTop = top + 22, barBottom = top + 44;
+            text(canvas, "REGEN", centerX - half, top + 14, 12, MUTED, false);
+            text(canvas, "ASSIST", centerX + half, top + 14, 12, MUTED, false, Paint.Align.RIGHT);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.5f);
+            paint.setColor(LINE);
+            canvas.drawRect(centerX - half, barTop, centerX + half, barBottom, paint);
+            paint.setStyle(Paint.Style.FILL);
+            Double amps = reading.imaAmps;
+            if (amps != null) {
+                float fraction = (float) Math.max(-1, Math.min(1, amps / 120d));
+                paint.setColor(AMBER);
+                if (fraction >= 0) canvas.drawRect(centerX, barTop + 2, centerX + half * fraction, barBottom - 2, paint);
+                else canvas.drawRect(centerX + half * fraction, barTop + 2, centerX, barBottom - 2, paint);
+            }
+            line(canvas, centerX, barTop - 3, centerX, barBottom + 3, MUTED);
+            text(canvas, amps == null ? "--" : Math.round(Math.abs(amps)) + " A", centerX, top + 14, 13, AMBER, false,
+                    Paint.Align.CENTER);
         }
 
         private void drawWarmup(Canvas canvas, Double coolant) {
@@ -1350,7 +1470,7 @@ public final class HudActivity extends Activity {
             float chartLeft = 104;
             float chartRight = 590;
             float chartTop = 389;
-            float chartBottom = 459;
+            float chartBottom = 459 + extra();
             text(canvas, "8K", 65, chartTop + 4, 12, MUTED, false);
             text(canvas, "0", 65, chartBottom, 12, MUTED, false);
             for (int row = 0; row <= 2; row++) {
@@ -1517,7 +1637,7 @@ public final class HudActivity extends Activity {
             if (thermalLevel == THERMAL_NORMAL && mapPreview && !demo && mapX >= MAP_LEFT && mapX <= MAP_RIGHT
                     && y >= MAP_TOP && y <= 480
                     && (!hasPreciseLocation() || !gpsEnabled() || (!powered && !accessoryActive))) return 5;
-            if (y < 570 || y > 620 || x < CONTROL_LEFT) return -1;
+            if (extra() > 0 || y < 570 || y > 620 || x < CONTROL_LEFT) return -1;
             int index = (int) ((x - CONTROL_LEFT) / CONTROL_STEP);
             if (index >= CONTROL_COUNT || x > CONTROL_LEFT + index * CONTROL_STEP + CONTROL_WIDTH) return -1;
             return index;
