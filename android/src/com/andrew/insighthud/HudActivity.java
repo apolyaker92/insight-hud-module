@@ -52,8 +52,10 @@ public final class HudActivity extends Activity {
     private LocationManager locationManager;
     private Location gpsFix;
     private boolean gpsRegistered;
+    private boolean gpsTestActive;
     private static final int GPS_PERMISSION = 24;
     private static final long GPS_STALE_MS = 12000;
+    private static final long GPS_TEST_MS = 5 * 60 * 1000;
     private boolean dim;
     private boolean powered;
     private boolean powerKnown;
@@ -83,6 +85,11 @@ public final class HudActivity extends Activity {
     private boolean foreground;
     private final Runnable confirmPowerLoss = this::parkHud;
     private final Runnable finishShutdown = this::blankParkedHud;
+    private final Runnable finishGpsTest = () -> {
+        setGpsTest(false);
+        updateMap();
+        blankParkedHud();
+    };
     private final Runnable expireGpsFix = () -> {
         gpsFix = null;
         refreshMapTiles();
@@ -309,16 +316,29 @@ public final class HudActivity extends Activity {
                     Manifest.permission.ACCESS_COARSE_LOCATION}, GPS_PERMISSION);
         } else if (!gpsEnabled()) {
             startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+        } else if (!powered && !accessoryActive) {
+            setGpsTest(!gpsTestActive);
+            updateMap();
+            hud.invalidate();
         }
+    }
+
+    private void setGpsTest(boolean active) {
+        gpsTestActive = active;
+        main.removeCallbacks(finishGpsTest);
+        if (active) main.postDelayed(finishGpsTest, GPS_TEST_MS);
+        updateScreenPower();
     }
 
     private void updateMap() {
         boolean liveMap = foreground && mapPreview && !demo;
+        if (gpsTestActive && (!liveMap || accessoryActive)) setGpsTest(false);
         if (liveMap) {
             roadMap.open();
             refreshMapTiles();
         }
-        boolean wantGps = liveMap && accessoryActive && hasPreciseLocation() && locationManager != null;
+        boolean wantGps = liveMap && (accessoryActive || gpsTestActive)
+                && hasPreciseLocation() && locationManager != null;
         if (wantGps == gpsRegistered) return;
         if (wantGps) {
             try {
@@ -476,7 +496,7 @@ public final class HudActivity extends Activity {
     private void updateScreenPower() {
         boolean drivingDisplay = accessoryActive || shutdownStartedAt != 0;
         setShowWhenLocked(drivingDisplay);
-        if (drivingDisplay) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (drivingDisplay || gpsTestActive) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
@@ -842,9 +862,10 @@ public final class HudActivity extends Activity {
         private String mapStatus(OfflineRoadMap.Region region) {
             if (!hasPreciseLocation()) return "TAP MAP FOR GPS";
             if (!gpsEnabled()) return "TAP MAP TO ENABLE GPS";
-            if (!accessoryActive) return "GPS STANDBY";
-            if (gpsFix == null) return "ACQUIRING GPS";
-            return region != null && !fixInRegion(region) ? "OUTSIDE MAP AREA" : "GPS FIX";
+            if (!accessoryActive && !gpsTestActive) return "TAP MAP FOR GPS TEST";
+            String status = gpsFix == null ? "ACQUIRING GPS"
+                    : region != null && !fixInRegion(region) ? "OUTSIDE MAP AREA" : "GPS FIX";
+            return gpsTestActive ? "TEST / " + status + " / TAP TO STOP" : status;
         }
 
         private void drawGpsMarker(Canvas canvas) {
@@ -1035,7 +1056,8 @@ public final class HudActivity extends Activity {
             float y = (screenY - top) / scale;
             float mapX = mirror ? 1280 - x : x;
             if (mapPreview && !demo && mapX >= MAP_LEFT && mapX <= MAP_RIGHT
-                    && y >= MAP_TOP && y <= 480 && (!hasPreciseLocation() || !gpsEnabled())) return 5;
+                    && y >= MAP_TOP && y <= 480
+                    && (!hasPreciseLocation() || !gpsEnabled() || (!powered && !accessoryActive))) return 5;
             if (y < 570 || y > 620 || x < CONTROL_LEFT) return -1;
             int index = (int) ((x - CONTROL_LEFT) / CONTROL_STEP);
             if (index >= CONTROL_COUNT || x > CONTROL_LEFT + index * CONTROL_STEP + CONTROL_WIDTH) return -1;
