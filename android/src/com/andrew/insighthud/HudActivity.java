@@ -19,6 +19,9 @@ import android.graphics.Path;
 import android.graphics.PathMeasure;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
@@ -45,6 +48,12 @@ public final class HudActivity extends Activity {
     private boolean demo;
     private boolean mapPreview;
     private long mapPreviewStartedAt;
+    private OfflineRoadMap roadMap;
+    private LocationManager locationManager;
+    private Location gpsFix;
+    private boolean gpsRegistered;
+    private static final int GPS_PERMISSION = 24;
+    private static final long GPS_STALE_MS = 12000;
     private boolean dim;
     private boolean powered;
     private boolean powerKnown;
@@ -74,6 +83,33 @@ public final class HudActivity extends Activity {
     private boolean foreground;
     private final Runnable confirmPowerLoss = this::parkHud;
     private final Runnable finishShutdown = this::blankParkedHud;
+    private final Runnable expireGpsFix = () -> {
+        gpsFix = null;
+        refreshMapTiles();
+        hud.invalidate();
+    };
+    private final LocationListener gpsListener = new LocationListener() {
+        @Override public void onLocationChanged(Location location) {
+            long age = (SystemClock.elapsedRealtimeNanos() - location.getElapsedRealtimeNanos()) / 1000000;
+            if (!gpsRegistered || age >= GPS_STALE_MS || !location.hasAccuracy() || location.getAccuracy() > 100) return;
+            gpsFix = location;
+            main.removeCallbacks(expireGpsFix);
+            main.postDelayed(expireGpsFix, GPS_STALE_MS - Math.max(0, age));
+            refreshMapTiles();
+            hud.invalidate();
+        }
+
+        @Override public void onProviderDisabled(String provider) {
+            main.removeCallbacks(expireGpsFix);
+            expireGpsFix.run();
+        }
+
+        @Override public void onProviderEnabled(String provider) {
+            hud.invalidate();
+        }
+
+        @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
+    };
     private final Runnable staleReadings = () -> {
         updateReadings(null);
         linkStatus = "DATA STALE";
@@ -106,6 +142,11 @@ public final class HudActivity extends Activity {
         getWindow().setStatusBarColor(Color.BLACK);
         hud = new HudView(this);
         setContentView(hud);
+        locationManager = getSystemService(LocationManager.class);
+        roadMap = new OfflineRoadMap(this, () -> {
+            refreshMapTiles();
+            hud.invalidate();
+        });
         BluetoothManager manager = getSystemService(BluetoothManager.class);
         bluetooth = manager == null ? null : manager.getAdapter();
         if (bluetooth != null) {
@@ -142,6 +183,7 @@ public final class HudActivity extends Activity {
     @Override protected void onDestroy() {
         main.removeCallbacksAndMessages(null);
         if (obd != null) obd.destroy();
+        roadMap.close();
         unregisterReceiver(batteryReceiver);
         super.onDestroy();
     }
@@ -151,6 +193,7 @@ public final class HudActivity extends Activity {
         foreground = true;
         startTripAnimation();
         connectSavedAdapter();
+        updateMap();
     }
 
     private void updateAccessoryPower(boolean plugged) {
@@ -167,6 +210,7 @@ public final class HudActivity extends Activity {
             updateScreenPower();
             startTripAnimation();
             if (foreground) connectSavedAdapter();
+            updateMap();
         } else if (!plugged && accessoryActive) {
             main.postDelayed(confirmPowerLoss, POWER_LOSS_DELAY_MS);
         }
@@ -189,6 +233,7 @@ public final class HudActivity extends Activity {
         releaseStartupSound();
         main.removeCallbacks(staleReadings);
         connectSavedAdapter();
+        updateMap();
         if (foreground && getSystemService(PowerManager.class).isInteractive()) {
             shutdownStartedAt = SystemClock.uptimeMillis();
             main.postDelayed(finishShutdown, SHUTDOWN_DURATION_MS);
@@ -207,6 +252,7 @@ public final class HudActivity extends Activity {
 
     @Override protected void onStop() {
         foreground = false;
+        updateMap();
         releaseStartupSound();
         if (obd != null) obd.stop();
         main.removeCallbacks(staleReadings);
@@ -247,6 +293,62 @@ public final class HudActivity extends Activity {
     private boolean hasBluetoothPermission() {
         return Build.VERSION.SDK_INT < 31 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
                 == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean hasPreciseLocation() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean gpsEnabled() {
+        return locationManager != null && locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+    }
+
+    private void enableMapLocation() {
+        if (!hasPreciseLocation()) {
+            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION}, GPS_PERMISSION);
+        } else if (!gpsEnabled()) {
+            startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+        }
+    }
+
+    private void updateMap() {
+        boolean liveMap = foreground && mapPreview && !demo;
+        if (liveMap) {
+            roadMap.open();
+            refreshMapTiles();
+        }
+        boolean wantGps = liveMap && accessoryActive && hasPreciseLocation() && locationManager != null;
+        if (wantGps == gpsRegistered) return;
+        if (wantGps) {
+            try {
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0,
+                        gpsListener, Looper.getMainLooper());
+                gpsRegistered = true;
+            } catch (IllegalArgumentException | SecurityException unavailable) {
+                hud.invalidate();
+            }
+        } else {
+            gpsRegistered = false;
+            locationManager.removeUpdates(gpsListener);
+            main.removeCallbacks(expireGpsFix);
+            expireGpsFix.run();
+            if (liveMap) refreshMapTiles();
+        }
+    }
+
+    private void refreshMapTiles() {
+        OfflineRoadMap.Region region = roadMap.region();
+        if (!foreground || !mapPreview || demo || region == null) return;
+        if (fixInRegion(region)) {
+            roadMap.request(OfflineRoadMap.tileX(gpsFix.getLongitude()), OfflineRoadMap.tileY(gpsFix.getLatitude()));
+        } else {
+            roadMap.request(OfflineRoadMap.tileX(region.longitude), OfflineRoadMap.tileY(region.latitude));
+        }
+    }
+
+    private boolean fixInRegion(OfflineRoadMap.Region region) {
+        return gpsFix != null && region.contains(gpsFix.getLatitude(), gpsFix.getLongitude());
     }
 
     private void connectSavedAdapter() {
@@ -346,6 +448,9 @@ public final class HudActivity extends Activity {
         if (code == 23) {
             connectSavedAdapter();
             if (hasBluetoothPermission()) showLinkMenu();
+        } else if (code == GPS_PERMISSION) {
+            updateMap();
+            hud.invalidate();
         }
     }
 
@@ -391,6 +496,7 @@ public final class HudActivity extends Activity {
                 demo = !demo;
                 main.removeCallbacks(staleReadings);
                 connectSavedAdapter();
+                updateMap();
                 break;
             case 2:
                 dim = !dim;
@@ -404,6 +510,10 @@ public final class HudActivity extends Activity {
                 mapPreview = !mapPreview;
                 mapPreviewStartedAt = SystemClock.uptimeMillis();
                 preferences.edit().putBoolean("mapPreview", mapPreview).apply();
+                updateMap();
+                break;
+            case 5:
+                enableMapLocation();
                 break;
             default:
                 return;
@@ -420,6 +530,13 @@ public final class HudActivity extends Activity {
         private static final int CONTROL_STEP = 240;
         private static final int CONTROL_WIDTH = 224;
         private static final int CONTROL_COUNT = 5;
+        private static final float MAP_LEFT = 650;
+        private static final float MAP_TOP = 131;
+        private static final float MAP_RIGHT = 1220;
+        private static final float MAP_BOTTOM = 448;
+        private static final float MAP_CENTER_X = (MAP_LEFT + MAP_RIGHT) / 2;
+        private static final float MAP_CENTER_Y = (MAP_TOP + MAP_BOTTOM) / 2;
+        private static final float MAP_TILE_PIXELS = 350;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
         private final Path sampleLoop = road(106, 258, 150, 225, 190, 155, 260, 131,
@@ -427,6 +544,10 @@ public final class HudActivity extends Activity {
         private final PathMeasure sampleDrive = new PathMeasure(sampleLoop, false);
         private final float[] marker = new float[2];
         private final float[] direction = new float[2];
+        private final String[] labelNames = new String[6];
+        private final float[] labelX = new float[6];
+        private final float[] labelY = new float[6];
+        private final float[] labelWidth = new float[6];
         private final Path[] sampleStreets = {
                 road(-70, 26, 136, 53, 200, 82, 358, 70, 440, 28, 640, 9),
                 road(-55, 100, 102, 115, 190, 155, 276, 183, 360, 188, 458, 166, 644, 155),
@@ -456,7 +577,7 @@ public final class HudActivity extends Activity {
             // The PH-1's legacy GPU driver drops cached text on state changes.
             // Rasterize this static instrument only when its data changes.
             setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-            setContentDescription("Insight HUD Module 2.3. Speed and RPM history on the left. Gauges or a simulated road map on the right. Bottom controls toggle mirror, demo, night brightness, Bluetooth setup, and map preview.");
+            setContentDescription("Insight HUD Module 2.3. Speed and RPM history on the left. Gauges or an offline road map on the right. Bottom controls toggle mirror, demo, night brightness, Bluetooth setup, and map view.");
             setFocusable(true);
         }
 
@@ -486,7 +607,7 @@ public final class HudActivity extends Activity {
             if (!starting && !shuttingDown) drawControls(canvas);
             canvas.restore();
             if ((starting || shuttingDown) && isShown()) postInvalidateDelayed(80);
-            else if (mapPreview && foreground && powered && hasWindowFocus()) postInvalidateDelayed(100);
+            else if (mapPreview && demo && foreground && powered && hasWindowFocus()) postInvalidateDelayed(100);
         }
 
         private void drawShutdown(Canvas canvas, long elapsed) {
@@ -567,8 +688,10 @@ public final class HudActivity extends Activity {
             drawRpmTrace(canvas, displayed.rpm);
 
             line(canvas, 620, 88, 620, 480, LINE);
-            if (mapPreview) {
+            if (mapPreview && demo) {
                 drawMapPreview(canvas, now);
+            } else if (mapPreview) {
+                drawOfflineMap(canvas);
             } else {
                 metric(canvas, "03  COOLANT TEMP", displayed.coolantF, "°F", 117, 100, 250);
                 metric(canvas, "04  INTAKE AIR", displayed.intakeF, "°F", 211, 0, 150);
@@ -635,6 +758,114 @@ public final class HudActivity extends Activity {
             canvas.restore();
             text(canvas, "DEMO ROADS / GPS INACTIVE", 650, 469, 12, MUTED, false);
             text(canvas, "N UP", 1220, 469, 12, MUTED, false, Paint.Align.RIGHT);
+        }
+
+        private void drawOfflineMap(Canvas canvas) {
+            OfflineRoadMap.Region region = roadMap.region();
+            text(canvas, "03  OFFLINE MAP", MAP_LEFT, 118, 19, AMBER, false);
+            text(canvas, region == null ? "ALBANY REGION" : region.name,
+                    MAP_RIGHT, 118, 14, MUTED, false, Paint.Align.RIGHT);
+            border(canvas, MAP_LEFT, MAP_TOP, MAP_RIGHT, MAP_BOTTOM);
+            text(canvas, "© OpenStreetMap contributors", MAP_LEFT, 469, 12, MUTED, false);
+            String status = mapStatus(region);
+            text(canvas, status + "  /  N UP", MAP_RIGHT, 469, 12, AMBER, false, Paint.Align.RIGHT);
+            if (region == null) {
+                text(canvas, roadMap.failed() ? "MAP DATA UNAVAILABLE" : "LOADING LOCAL ROADS",
+                        MAP_CENTER_X, MAP_CENTER_Y, 19, MUTED, false, Paint.Align.CENTER);
+                return;
+            }
+            boolean tracking = fixInRegion(region);
+            double viewX = OfflineRoadMap.tileX(tracking ? gpsFix.getLongitude() : region.longitude);
+            double viewY = OfflineRoadMap.tileY(tracking ? gpsFix.getLatitude() : region.latitude);
+            OfflineRoadMap.Scene scene = roadMap.scene();
+            if (scene == null || !scene.covers(viewX, viewY)) {
+                text(canvas, roadMap.failed() ? "MAP DATA UNAVAILABLE" : "LOADING LOCAL ROADS",
+                        MAP_CENTER_X, MAP_CENTER_Y, 19, MUTED, false, Paint.Align.CENTER);
+                return;
+            }
+            float originX = MAP_CENTER_X - (float) (viewX - scene.x) * MAP_TILE_PIXELS;
+            float originY = MAP_CENTER_Y - (float) (viewY - scene.y) * MAP_TILE_PIXELS;
+            canvas.save();
+            canvas.clipRect(MAP_LEFT + 1, MAP_TOP + 1, MAP_RIGHT - 1, MAP_BOTTOM - 1);
+            canvas.save();
+            canvas.translate(originX, originY);
+            canvas.scale(MAP_TILE_PIXELS, MAP_TILE_PIXELS);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setColor(LINE);
+            paint.setStrokeWidth(1.2f / MAP_TILE_PIXELS);
+            canvas.drawPath(scene.roads[0], paint);
+            paint.setColor(MUTED);
+            paint.setStrokeWidth(2.1f / MAP_TILE_PIXELS);
+            canvas.drawPath(scene.roads[1], paint);
+            paint.setColor(AMBER);
+            paint.setStrokeWidth(3.1f / MAP_TILE_PIXELS);
+            canvas.drawPath(scene.roads[2], paint);
+            paint.setStrokeCap(Paint.Cap.BUTT);
+            paint.setStyle(Paint.Style.FILL);
+            canvas.restore();
+
+            // Keep the reflected display legible by separating labels from each other and the marker.
+            int labelCount = 0;
+            for (OfflineRoadMap.Label label : scene.labels) {
+                float x = originX + label.x * MAP_TILE_PIXELS;
+                float y = originY + label.y * MAP_TILE_PIXELS;
+                paint.setTypeface(labelFont);
+                paint.setTextSize(13);
+                float halfWidth = paint.measureText(label.name) / 2 + 5;
+                if (x - halfWidth < MAP_LEFT + 4 || x + halfWidth > MAP_RIGHT - 4
+                        || y < MAP_TOP + 16 || y > MAP_BOTTOM - 18) continue;
+                if (tracking && Math.abs(x - MAP_CENTER_X) < halfWidth + 24 && Math.abs(y - MAP_CENTER_Y) < 28) continue;
+                boolean clear = true;
+                for (int index = 0; index < labelCount; index++) {
+                    if (labelNames[index].equals(label.name)
+                            || (Math.abs(x - labelX[index]) < halfWidth + labelWidth[index]
+                            && Math.abs(y - labelY[index]) < 22)) {
+                        clear = false;
+                        break;
+                    }
+                }
+                if (!clear) continue;
+                paint.setColor(0xFF080602);
+                canvas.drawRect(x - halfWidth, y - 14, x + halfWidth, y + 4, paint);
+                text(canvas, label.name, x, y, 13, AMBER, false, Paint.Align.CENTER);
+                labelNames[labelCount] = label.name;
+                labelX[labelCount] = x;
+                labelY[labelCount] = y;
+                labelWidth[labelCount++] = halfWidth;
+                if (labelCount == labelNames.length) break;
+            }
+            if (tracking) drawGpsMarker(canvas);
+            canvas.restore();
+        }
+
+        private String mapStatus(OfflineRoadMap.Region region) {
+            if (!hasPreciseLocation()) return "TAP MAP FOR GPS";
+            if (!gpsEnabled()) return "TAP MAP TO ENABLE GPS";
+            if (!accessoryActive) return "GPS STANDBY";
+            if (gpsFix == null) return "ACQUIRING GPS";
+            return region != null && !fixInRegion(region) ? "OUTSIDE MAP AREA" : "GPS FIX";
+        }
+
+        private void drawGpsMarker(Canvas canvas) {
+            canvas.save();
+            canvas.translate(MAP_CENTER_X, MAP_CENTER_Y);
+            paint.setColor(0xFF080602);
+            canvas.drawCircle(0, 0, 19, paint);
+            paint.setColor(AMBER);
+            if (gpsFix.hasBearing() && gpsFix.hasSpeed() && gpsFix.getSpeed() >= 2f) {
+                canvas.rotate(gpsFix.getBearing());
+                path.reset();
+                path.moveTo(0, -16);
+                path.lineTo(10, 10);
+                path.lineTo(0, 6);
+                path.lineTo(-10, 10);
+                path.close();
+                canvas.drawPath(path, paint);
+            } else {
+                canvas.drawCircle(0, 0, 8, paint);
+            }
+            canvas.restore();
         }
 
         private void drawRpmTrace(Canvas canvas, Double rpm) {
@@ -802,6 +1033,9 @@ public final class HudActivity extends Activity {
         private int controlAt(float screenX, float screenY) {
             float x = (screenX - left) / scale;
             float y = (screenY - top) / scale;
+            float mapX = mirror ? 1280 - x : x;
+            if (mapPreview && !demo && mapX >= MAP_LEFT && mapX <= MAP_RIGHT
+                    && y >= MAP_TOP && y <= 480 && (!hasPreciseLocation() || !gpsEnabled())) return 5;
             if (y < 570 || y > 620 || x < CONTROL_LEFT) return -1;
             int index = (int) ((x - CONTROL_LEFT) / CONTROL_STEP);
             if (index >= CONTROL_COUNT || x > CONTROL_LEFT + index * CONTROL_STEP + CONTROL_WIDTH) return -1;

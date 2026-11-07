@@ -9,12 +9,19 @@ An Android HUD for a 2001 Honda Insight (ZE1), built for an Essential PH-1 runni
 - Pair a compatible classic Bluetooth OBD-II adapter in Android, then select it in the HUD's LINK menu. Demo mode can preview the dashboard without a connection.
 - Use MIRROR for a reflected display and DIM for night viewing.
 - Disable Android's charging sound if you want only the HUD chime. The HUD holds a fixed landscape orientation.
+- Use SHOW MAP for the Albany and East Greenbush offline map, or SHOW GAUGES to switch back. Tap the map to grant precise foreground location or open Android Location settings. The HUD requests GPS while the real map is visible and accessory power is on. DEMO uses a fictional map and simulated gauges.
 
 On power-up the HUD plays its startup animation and chime and reconnects to the selected adapter. It ignores interruptions shorter than three seconds. A sustained loss closes the Bluetooth OBD session, runs a short standby animation, and blanks the display. Android then sleeps according to its screen timeout. Automatic wake on reconnect depends on the phone's charger-wake behavior. While powered, the HUD can display over Android's lock screen.
 
 ## Build the Android app
 
 Run `./android/build.ps1 -SdkDirectory <path> -BuildDirectory ./work/hud-build` from the repository root in PowerShell with a JDK on PATH. The script expects Android 35's `android.jar` under `android-35` and the Windows build tools, including `lib/d8.jar` and `lib/apksigner.jar`, under `android-15` in that SDK directory. It creates a local development signing key if one is missing. Keep the same signing key for in-place updates.
+
+## Offline road data
+
+The included Albany road database is derived from [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright) and available under the [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/). It covers 42.49°–42.85° N and 74.03°–73.49° W. The database metadata records the source snapshot date.
+
+Use `android/pack_roads.py` to turn an Overpass JSON road export with `out geom` into an indexed road database. Pass `--bounds S W N E --center LAT LON --name NAME`. When bundling a new database in the APK, update the copied database filename in `OfflineRoadMap.java` so existing installs pick up the new pack.
 
 ## Print the cradle
 
