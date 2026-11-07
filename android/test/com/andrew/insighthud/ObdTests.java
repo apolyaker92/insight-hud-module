@@ -95,6 +95,40 @@ public final class ObdTests {
         check("a single bright flash does not jump to full", afterOneSunnySample < 0.6f);
         check("sustained light does reach full", afterManySamples > 0.95f);
 
+        Alerts queue = new Alerts();
+        check("no alert when nothing raised", queue.tick(0, false) == null);
+        check("an alert is accepted", queue.raise("OBD LINKED", Alerts.INFO, 1000));
+        Alerts.Alert shown = queue.tick(1000, false);
+        check("it appears and reports starting", shown != null && shown.text.equals("OBD LINKED") && queue.justStarted());
+        check("it is not reported as starting again", queue.tick(1100, false) != null && !queue.justStarted());
+        check("info expires after a few seconds", queue.tick(1000 + 3600, false) == null);
+        check("the same text is ignored at once", !queue.raise("OBD LINKED", Alerts.INFO, 5000));
+        check("but allowed after a while", queue.raise("OBD LINKED", Alerts.INFO, 40_000));
+        queue.clear();
+        queue.raise("GPS LOCKED", Alerts.INFO, 0);
+        queue.raise("OBD LINK LOST", Alerts.WARN, 0);
+        check("the worse alert shows first", queue.tick(10, false).text.equals("OBD LINK LOST"));
+        queue.raise("COOLANT HIGH", Alerts.CRITICAL, 20);
+        check("a critical alert cuts in", queue.tick(30, false).text.equals("COOLANT HIGH"));
+        check("the interrupted warning does not replay forever",
+                queue.tick(30 + 9100, false) == null || queue.tick(30 + 9100, false).level <= Alerts.WARN);
+        queue.clear();
+        queue.raise("GPS LOCKED", Alerts.INFO, 0);
+        check("nothing starts while the display is held", queue.tick(100, true) == null);
+        Alerts.Alert afterHold = queue.tick(200, false);
+        check("it starts once the hold ends", afterHold != null && afterHold.shownAt == 200);
+        queue.clear();
+        queue.raise("OLD NEWS", Alerts.INFO, 0);
+        check("stale alerts are dropped unseen", queue.tick(25_000, false) == null);
+
+        queue.clear();
+        queue.raise("OBD LINKED", Alerts.INFO, 0);
+        queue.tick(10, false);
+        queue.tick(1000, true);
+        queue.tick(9000, true);
+        check("a shown alert waits out a long hold", queue.tick(9100, false) != null);
+        check("and still expires afterwards", queue.tick(9100 + 3600, false) == null);
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }

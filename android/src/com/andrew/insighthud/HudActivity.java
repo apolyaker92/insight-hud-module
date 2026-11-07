@@ -154,6 +154,14 @@ public final class HudActivity extends Activity {
             3050, 3450, 4200, 4700, 3150, 2680, 2530, 2420, 2450, 2400};
     // Gauges the car has actually reported this session: throttle, load, MPG inputs, intake air.
     private final boolean[] seenGauge = new boolean[4];
+    private final Alerts alerts = new Alerts();
+    private static final double WARM_F = 175;  // "operating temperature reached"
+    private static final double HOT_F = 230;   // coolant warning; the dash gauge remains authoritative
+    private boolean linkLive, failureAnnounced, setupAnnounced, sawCool, warmAnnounced, hotAnnounced, fixAnnounced;
+    private int failedAttempts;
+    private volatile int alertInfoLoadId, alertWarnLoadId, alertCriticalLoadId;
+    private final java.util.Set<Integer> loadedSamples =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<Integer>());
     private final float[] rpmHistory = new float[DEMO_RPM.length];
     private int rpmNext;
     private int rpmCount;
@@ -188,6 +196,10 @@ public final class HudActivity extends Activity {
             if (!gpsRegistered || age >= GPS_STALE_MS || !location.hasAccuracy() || location.getAccuracy() > 100) return;
             gpsFix = location;
             lastMapFix = location;
+            if (!fixAnnounced) {
+                fixAnnounced = true;
+                raiseAlert("GPS LOCKED", Alerts.INFO);
+            }
             scheduleGpsAvailability(age);
             if (location.hasBearing() && location.hasSpeed() && location.getSpeed() >= 2f) {
                 gpsCourse = location.getBearing();
@@ -244,6 +256,7 @@ public final class HudActivity extends Activity {
                 .build();
         switchSounds.setOnLoadCompleteListener((pool, sample, status) -> {
             if (pool != switchSounds || status != 0) return;
+            loadedSamples.add(sample);
             if (sample == switchLoadId) switchSoundId = sample;
             else if (sample == shutdownLoadId) shutdownSoundId = sample;
             else if (sample == lockHeadingLoadId) lockHeadingSoundId = sample;
@@ -257,6 +270,9 @@ public final class HudActivity extends Activity {
         lockNorthLoadId = switchSounds.load(this, R.raw.lock_north, 1);
         zoomInLoadId = switchSounds.load(this, R.raw.zoom_in, 1);
         zoomOutLoadId = switchSounds.load(this, R.raw.zoom_out, 1);
+        alertInfoLoadId = switchSounds.load(this, R.raw.alert_info, 1);
+        alertWarnLoadId = switchSounds.load(this, R.raw.alert_warn, 1);
+        alertCriticalLoadId = switchSounds.load(this, R.raw.alert_critical, 1);
         preferences = getSharedPreferences("hud", MODE_PRIVATE);
         mirror = preferences.getBoolean("mirror", false);
         brightnessMode = preferences.contains("brightnessMode")
@@ -287,6 +303,7 @@ public final class HudActivity extends Activity {
             obd = new ObdBluetooth(bluetooth, (status, update) -> {
                 main.removeCallbacks(staleReadings);
                 linkStatus = status;
+                trackLink(status, update);
                 updateReadings(update);
                 if (update != null) main.postDelayed(staleReadings, 6000);
                 hud.invalidate();
@@ -350,6 +367,62 @@ public final class HudActivity extends Activity {
         updateMap();
     }
 
+    private void raiseAlert(String text, int level) {
+        if (hud == null || parkedBlank || thermalBlank) return;
+        if (alerts.raise(text, level, SystemClock.uptimeMillis())) hud.invalidate();
+    }
+
+    private void playAlertSound(int level) {
+        int id = level == Alerts.CRITICAL ? alertCriticalLoadId : level == Alerts.WARN ? alertWarnLoadId : alertInfoLoadId;
+        if (switchSounds == null || !loadedSamples.contains(id)) return;
+        float volume = level == Alerts.INFO ? 0.8f : 0.95f;
+        switchSounds.play(id, volume, volume, 1, 0, 1);
+    }
+
+    private void resetTripAlerts() {
+        alerts.clear();
+        sawCool = warmAnnounced = hotAnnounced = fixAnnounced = false;
+    }
+
+    private void trackLink(String status, ObdBluetooth.Readings update) {
+        if (update != null) {
+            if (!linkLive) {
+                linkLive = true;
+                failedAttempts = 0;
+                failureAnnounced = false;
+                raiseAlert("OBD LINKED", Alerts.INFO);
+            }
+            return;
+        }
+        if (status.startsWith("LINK LOST")) {
+            if (linkLive) {
+                linkLive = false;
+                raiseAlert("OBD LINK LOST", Alerts.WARN);
+            } else if (++failedAttempts >= 3 && !failureAnnounced) {
+                failureAnnounced = true;
+                raiseAlert("OBD CONNECTION FAILED", Alerts.WARN);
+            }
+        } else if (!setupAnnounced && (status.equals("BLUETOOTH OFF") || status.equals("PAIR ADAPTER"))) {
+            setupAnnounced = true;
+            raiseAlert(status.equals("BLUETOOTH OFF") ? "BLUETOOTH IS OFF" : "ADAPTER NOT PAIRED", Alerts.WARN);
+        }
+    }
+
+    private void trackCoolant(Double coolant) {
+        if (coolant == null || demo) return;
+        if (coolant < WARM_F - 8) sawCool = true;
+        if (sawCool && !warmAnnounced && coolant >= WARM_F) {
+            warmAnnounced = true;
+            raiseAlert("OPERATING TEMP REACHED", Alerts.INFO);
+        }
+        if (coolant >= HOT_F && !hotAnnounced) {
+            hotAnnounced = true;
+            raiseAlert("COOLANT HIGH", Alerts.CRITICAL);
+        } else if (coolant < HOT_F - 10) {
+            hotAnnounced = false;
+        }
+    }
+
     private void updateAccessoryPower(boolean plugged) {
         if (powerKnown && powered == plugged) return;
         powerKnown = true;
@@ -358,6 +431,7 @@ public final class HudActivity extends Activity {
         if (plugged && !accessoryActive) {
             main.removeCallbacks(finishShutdown);
             accessoryActive = true;
+            resetTripAlerts();
             demo = false; // A preview left on must not hide the real drive.
             shutdownReport = null;
             shutdownStartedAt = 0;
@@ -397,7 +471,11 @@ public final class HudActivity extends Activity {
         }
         if (next == thermalLevel) return;
         boolean reconnect = thermalLevel == THERMAL_HOLD || next == THERMAL_HOLD;
+        int previousLevel = thermalLevel;
         thermalLevel = next;
+        if (next == THERMAL_HOLD) playAlertSound(Alerts.CRITICAL); // the hold screen takes over the banner
+        else if (next == THERMAL_LIMIT && previousLevel == THERMAL_NORMAL) raiseAlert("PHONE HOT / DIMMING", Alerts.WARN);
+        else if (next == THERMAL_NORMAL) raiseAlert("THERMAL NORMAL", Alerts.INFO);
         thermalBlank = false;
         thermalStartedAt = SystemClock.uptimeMillis();
         main.removeCallbacks(finishThermalWarning);
@@ -647,6 +725,7 @@ public final class HudActivity extends Activity {
             }
         } else {
             gpsRegistered = false;
+            fixAnnounced = false;
             locationManager.removeUpdates(gpsListener);
             cancelGpsAvailability();
             main.removeCallbacks(expireGpsFix);
@@ -712,6 +791,20 @@ public final class HudActivity extends Activity {
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        String preview = intent == null ? null : intent.getStringExtra("hud_alert");
+        if (preview != null) {
+            alerts.forget();
+            switch (preview) {
+                case "linked": raiseAlert("OBD LINKED", Alerts.INFO); break;
+                case "lost": raiseAlert("OBD LINK LOST", Alerts.WARN); break;
+                case "failed": raiseAlert("OBD CONNECTION FAILED", Alerts.WARN); break;
+                case "warm": raiseAlert("OPERATING TEMP REACHED", Alerts.INFO); break;
+                case "hot": raiseAlert("COOLANT HIGH", Alerts.CRITICAL); break;
+                case "gps": raiseAlert("GPS LOCKED", Alerts.INFO); break;
+                case "thermal": raiseAlert("PHONE HOT / DIMMING", Alerts.WARN); break;
+                default: break;
+            }
+        }
         String requested = intent == null ? null : intent.getStringExtra("obd_probe");
         if (requested == null || obd == null) return;
         List<String> accepted = new ArrayList<>();
@@ -733,6 +826,8 @@ public final class HudActivity extends Activity {
             return;
         }
         updateReadings(null);
+        linkLive = failureAnnounced = setupAnnounced = false;
+        failedAttempts = 0;
         java.util.Arrays.fill(seenGauge, false);
         if (obd != null) obd.stop();
         if (thermalLevel == THERMAL_HOLD) linkStatus = "THERMAL HOLD";
@@ -755,6 +850,7 @@ public final class HudActivity extends Activity {
             seenGauge[1] |= update.load != null;
             seenGauge[2] |= update.load != null && update.rpm != null;
             seenGauge[3] |= update.intakeF != null;
+            trackCoolant(update.coolantF);
         }
         if (update == null) {
             trip.disconnect();
@@ -1110,9 +1206,16 @@ public final class HudActivity extends Activity {
             else if (shuttingDown) drawShutdown(canvas, now - shutdownStartedAt);
             else if (starting) drawStartup(canvas, startupElapsed);
             else drawGauges(canvas, now);
+            boolean alertHeld = thermalHold || shuttingDown || starting || startupPending;
+            Alerts.Alert alert = alerts.tick(now, alertHeld);
+            if (alert != null) {
+                if (alerts.justStarted()) playAlertSound(alert.level);
+                drawAlert(canvas, alert, now);
+            }
             canvas.restore();
             if (!starting && !shuttingDown && !thermalHold && extra() == 0) drawControls(canvas);
             canvas.restore();
+            if (alerts.busy() && isShown()) postInvalidateDelayed(60);
             if ((thermalHold || starting || shuttingDown
                     || (thermalLevel == THERMAL_LIMIT && now - thermalStartedAt < THERMAL_WARNING_MS))
                     && isShown()) postInvalidateDelayed(starting ? 33 : 80);
@@ -1121,6 +1224,22 @@ public final class HudActivity extends Activity {
                         || (lockStartedAt != 0 && now - lockStartedAt < TARGET_CAPTION_MS)) postInvalidateDelayed(32);
                 else if (demo && powered) postInvalidateDelayed(100);
             }
+        }
+
+        /** A banner that takes over the header: calm for info, flashing for warnings and critical alerts. */
+        private void drawAlert(Canvas canvas, Alerts.Alert alert, long now) {
+            long age = now - alert.shownAt;
+            boolean flashing = alert.level > Alerts.INFO;
+            boolean inverted = flashing && age / (alert.level == Alerts.CRITICAL ? 220 : 420) % 2 == 0 && age < 4000;
+            int fill = inverted ? AMBER : 0xFF080602;
+            int ink = inverted ? 0xFF080602 : AMBER;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(fill);
+            canvas.drawRect(41, 35, 1239, 87, paint);
+            border(canvas, 40, 34, 1240, 88);
+            String prefix = alert.level == Alerts.CRITICAL ? "!! " : alert.level == Alerts.WARN ? "! " : "> ";
+            float slide = Math.min(1f, age / 180f); // text eases in from the left
+            text(canvas, prefix + alert.text, 640 - (1 - slide) * 80, 72, 30, ink, true, Paint.Align.CENTER);
         }
 
         private void drawThermalWarning(Canvas canvas, long now) {
