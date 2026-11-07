@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
@@ -79,6 +80,13 @@ final class ObdBluetooth {
         job = worker.submit(() -> run(session));
     }
 
+    /** True while a session for this adapter address is active (connecting, linked or retrying). */
+    boolean isRunning(String address) {
+        Session session = current;
+        return session != null && !session.cancelled && session.address.equals(address)
+                && job != null && !job.isDone();
+    }
+
     void stop() {
         Session old = current;
         current = null;
@@ -93,6 +101,15 @@ final class ObdBluetooth {
         stop();
         worker.shutdownNow();
         timer.shutdownNow();
+    }
+
+    /** Closes the socket after the delay; a destroyed transport ends the session instead of throwing. */
+    private ScheduledFuture<?> schedule(Session session, long delayMs) throws InterruptedException {
+        try {
+            return timer.schedule(session::closeSocket, delayMs, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException destroyed) {
+            throw new InterruptedException();
+        }
     }
 
     private void publish(Session session, String status, Readings readings) {
@@ -118,7 +135,7 @@ final class ObdBluetooth {
                 publish(session, "BT CONNECTING", null);
                 session.socket = device.createRfcommSocketToServiceRecord(SERIAL_PORT);
                 if (session.cancelled) throw new InterruptedException();
-                ScheduledFuture<?> connectTimeout = timer.schedule(session::closeSocket, 12, TimeUnit.SECONDS);
+                ScheduledFuture<?> connectTimeout = schedule(session, 12000);
                 try {
                     session.socket.connect();
                 } finally {
@@ -179,7 +196,7 @@ final class ObdBluetooth {
 
     private String command(Session session, String request, long timeoutMs) throws IOException, InterruptedException {
         if (session.cancelled) throw new InterruptedException();
-        ScheduledFuture<?> timeout = timer.schedule(session::closeSocket, timeoutMs, TimeUnit.MILLISECONDS);
+        ScheduledFuture<?> timeout = schedule(session, timeoutMs);
         try {
             InputStream input = session.socket.getInputStream();
             OutputStream output = session.socket.getOutputStream();

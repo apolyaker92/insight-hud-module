@@ -101,7 +101,8 @@ final class OfflineRoadMap {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private SQLiteDatabase database; // Owned by the worker.
     private boolean compactGeometry;
-    private boolean opening, closed, failed;
+    private boolean opening, closed, failed, sceneFailed;
+    private static final long RETRY_MS = 5000;
     private int requestedX = -1, requestedY = -1;
     private Region region;
     private Scene scene;
@@ -113,7 +114,7 @@ final class OfflineRoadMap {
 
     Region region() { return region; }
     Scene scene() { return scene; }
-    boolean failed() { return failed; }
+    boolean failed() { return failed || sceneFailed; }
 
     static double tileX(double longitude) {
         return (longitude + 180) / 360 * WORLD;
@@ -155,10 +156,22 @@ final class OfflineRoadMap {
                 main.post(() -> {
                     if (closed || requestedX != x || requestedY != y) return;
                     scene = loaded;
+                    sceneFailed = false;
                     changed.run();
                 });
             } catch (RuntimeException error) {
-                reportFailure(error);
+                // A tile read can fail transiently (storage I/O); retry rather than disabling the map.
+                Log.w(TAG, "Could not read offline road tiles", error);
+                main.post(() -> {
+                    if (closed || requestedX != x || requestedY != y) return;
+                    sceneFailed = true;
+                    changed.run();
+                    main.postDelayed(() -> {
+                        if (closed) return;
+                        requestedX = requestedY = -1; // Forget the failed request so the next refresh retries it.
+                        changed.run();
+                    }, RETRY_MS);
+                });
             }
         });
     }

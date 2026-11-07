@@ -75,6 +75,7 @@ public final class HudActivity extends Activity {
     private static final long GPS_STALE_MS = 12000;
     private static final long GPS_UNAVAILABLE_MS = 20000;
     private static final long GPS_TEST_MS = 5 * 60 * 1000;
+    private static final long GPS_RETRY_MS = 5000;
     private boolean dim;
     private boolean powered;
     private boolean powerKnown;
@@ -133,6 +134,7 @@ public final class HudActivity extends Activity {
         refreshMapTiles();
         hud.invalidate();
     };
+    private final Runnable retryGps = this::updateMap;
     private final Runnable showGpsUnavailable = () -> {
         gpsUnavailable = gpsRegistered && gpsEnabled();
         hud.invalidate();
@@ -290,6 +292,7 @@ public final class HudActivity extends Activity {
         if (plugged && !accessoryActive) {
             main.removeCallbacks(finishShutdown);
             accessoryActive = true;
+            demo = false; // A preview left on must not hide the real drive.
             shutdownReport = null;
             shutdownStartedAt = 0;
             parkedBlank = false;
@@ -348,7 +351,8 @@ public final class HudActivity extends Activity {
 
     private void parkHud() {
         accessoryActive = false;
-        shutdownReport = trip.finish(accessoryLostAt, System.currentTimeMillis());
+        long lostWallClock = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - accessoryLostAt);
+        shutdownReport = trip.finish(accessoryLostAt, lostWallClock);
         trip = new TripStats();
         if (shutdownReport != null) {
             saveTrip(shutdownReport);
@@ -423,9 +427,13 @@ public final class HudActivity extends Activity {
         foreground = false;
         updateMap();
         releaseStartupSound();
-        if (obd != null) obd.stop();
-        main.removeCallbacks(staleReadings);
-        updateReadings(null);
+        // Dialogs, permission prompts and Android settings stop the activity; keep the
+        // OBD link and trip sampling alive for the drive. Otherwise release the adapter.
+        if (!keepObdInBackground() && obd != null) {
+            obd.stop();
+            main.removeCallbacks(staleReadings);
+            updateReadings(null);
+        }
         super.onStop();
     }
 
@@ -510,6 +518,8 @@ public final class HudActivity extends Activity {
                 if (gpsEnabled()) scheduleGpsAvailability(0);
             } catch (IllegalArgumentException | SecurityException unavailable) {
                 hud.invalidate();
+                main.removeCallbacks(retryGps);
+                main.postDelayed(retryGps, GPS_RETRY_MS);
             }
         } else {
             gpsRegistered = false;
@@ -548,10 +558,18 @@ public final class HudActivity extends Activity {
         return gpsFix != null && region.contains(gpsFix.getLatitude(), gpsFix.getLongitude());
     }
 
+    private boolean keepObdInBackground() {
+        return accessoryActive && powered && !demo && thermalLevel != THERMAL_HOLD;
+    }
+
     private void connectSavedAdapter() {
+        String address = preferences.getString("adapterAddress", "");
+        if (obd != null && obd.isRunning(address) && keepObdInBackground() && hasBluetoothPermission()) {
+            hud.invalidate(); // Already linked; do not drop the session.
+            return;
+        }
         updateReadings(null);
         if (obd != null) obd.stop();
-        String address = preferences.getString("adapterAddress", "");
         if (thermalLevel == THERMAL_HOLD) linkStatus = "THERMAL HOLD";
         else if (bluetooth == null) linkStatus = "BLUETOOTH UNAVAILABLE";
         else if (demo) linkStatus = "DEMO ACTIVE";
@@ -698,6 +716,7 @@ public final class HudActivity extends Activity {
             case KeyEvent.KEYCODE_F4: control = 2; break;
             default: return super.dispatchKeyEvent(event);
         }
+        if ((control == 6 || control == 7) && !mapPreview) return true; // Heading and range only act on the map.
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
                 && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD
                 && (startupStartedAt == 0 || SystemClock.uptimeMillis() - startupStartedAt >= STARTUP_DURATION_MS)) {
