@@ -219,10 +219,11 @@ final class ObdBluetooth {
         boolean throttleSupported = ObdProtocol.supports(supported, 0x11);
         boolean hasInputs = speedSupported || rpmSupported || ObdProtocol.supports(supported, 5)
                 || ObdProtocol.supports(supported, 15) || ObdProtocol.supports(supported, 4) || throttleSupported;
-        // Speed, rpm, throttle and load go out every pass; the slow-moving readings only every SLOW_EVERY_MS.
-        Double coolant = null, intake = null, voltage = null;
+        // The car's link only manages a few requests a second, so rpm and speed go out every pass, throttle and
+        // load every MEDIUM_EVERY passes, and the slow-moving readings only every SLOW_EVERY_MS.
+        Double coolant = null, intake = null, voltage = null, load = null, throttle = null;
         long slowDueAt = 0, windowStart = SystemClock.elapsedRealtime();
-        int passes = 0;
+        int passes = 0, sinceMedium = MEDIUM_EVERY;
         while (!session.cancelled) {
             long passStart = SystemClock.elapsedRealtime();
             String[] probe = pendingProbe;
@@ -242,15 +243,21 @@ final class ObdBluetooth {
                         ? ObdProtocol.temperatureF(command(session, "010F", 2000), 15) : null;
                 voltage = ObdProtocol.voltage(command(session, "ATRV", 2000));
             }
-            Double load = ObdProtocol.supports(supported, 4)
-                    ? ObdProtocol.engineLoad(command(session, "0104", 2000)) : null;
+            boolean mediumDue = ++sinceMedium >= MEDIUM_EVERY;
+            if (mediumDue) {
+                sinceMedium = 0;
+                load = ObdProtocol.supports(supported, 4)
+                        ? ObdProtocol.engineLoad(command(session, "0104", 2000)) : null;
+                throttle = throttleSupported ? ObdProtocol.throttle(command(session, "0111", 2000)) : null;
+            }
             Double rpm = rpmSupported ? ObdProtocol.engineRpm(command(session, "010C", 2000)) : null;
             Double speed = speedSupported ? ObdProtocol.speedMph(command(session, "010D", 2000)) : null;
-            Double throttle = throttleSupported ? ObdProtocol.throttle(command(session, "0111", 2000)) : null;
             Double fuelGph = ObdProtocol.fuelGallonsPerHour(load, rpm);
             Double mpg = ObdProtocol.estimatedMpg(speed, fuelGph);
-            if (hasInputs && speed == null && rpm == null && (!slowDue || coolant == null) && (!slowDue || intake == null)
-                    && load == null && throttle == null) emptyCycles++;
+            boolean answered = speed != null || rpm != null
+                    || (slowDue && (coolant != null || intake != null))
+                    || (mediumDue && (load != null || throttle != null));
+            if (hasInputs && !answered) emptyCycles++;
             else emptyCycles = 0;
             if (emptyCycles >= 3) throw new IOException("ECU stopped responding");
             publish(session, session.address.equals(SimulatedElm.ADDRESS) ? "SIM LIVE" : "BT LIVE",
@@ -272,6 +279,7 @@ final class ObdBluetooth {
     /** The protocol the ECU last answered on; tried first on reconnects. */
     private volatile String workingProtocol;
     private static final long SLOW_EVERY_MS = 10_000;
+    private static final int MEDIUM_EVERY = 4;
     private static final long MIN_PASS_MS = 150;
 
     private String command(Session session, String request, long timeoutMs) throws IOException, InterruptedException {
