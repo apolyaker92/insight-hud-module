@@ -482,6 +482,7 @@ public final class HudActivity extends Activity {
             shutdownReport = null;
             shutdownStartedAt = 0;
             parkedBlank = false;
+            enterStandbyPower(false);
             startupPending = true;
             updateScreenPower();
             startTripAnimation();
@@ -611,7 +612,24 @@ public final class HudActivity extends Activity {
         shutdownStartedAt = 0;
         parkedBlank = true;
         updateScreenPower();
+        enterStandbyPower(true);
         hud.invalidate();
+    }
+
+    /** While parked and blank nothing should draw power: backlight off, light sensor and chime player released. */
+    private void enterStandbyPower(boolean standby) {
+        applyBrightness();
+        updateLightSensor();
+        if (standby) {
+            main.removeCallbacks(preloadSoundLater);
+            if (startupSound != null) {
+                startupSound.release();
+                startupSound = null;
+                startupPlaying = false;
+            }
+        } else if (foreground) {
+            main.postDelayed(preloadSoundLater, 400);
+        }
     }
 
     @Override protected void onStop() {
@@ -679,7 +697,7 @@ public final class HudActivity extends Activity {
             startupSound = null;
         }
         main.removeCallbacks(preloadSoundLater);
-        if (foreground) main.postDelayed(preloadSoundLater, 400);
+        if (foreground && !parkedBlank) main.postDelayed(preloadSoundLater, 400);
     }
 
     private boolean startupPlaying;
@@ -1067,6 +1085,11 @@ public final class HudActivity extends Activity {
 
     private void applyBrightness() {
         WindowManager.LayoutParams attributes = getWindow().getAttributes();
+        if (parkedBlank) {
+            attributes.screenBrightness = 0f;
+            getWindow().setAttributes(attributes);
+            return;
+        }
         float base = brightnessMode == 0 ? autoLevel : BRIGHTNESS_LEVELS[brightnessMode];
         // Thermal protection always wins over the chosen level.
         attributes.screenBrightness = thermalLevel == THERMAL_HOLD ? 0.03f
@@ -1075,7 +1098,7 @@ public final class HudActivity extends Activity {
     }
 
     private void updateLightSensor() {
-        boolean wanted = foreground && (brightnessMode == 0 || sounds.nightQuiet) && lightSensor != null;
+        boolean wanted = foreground && !parkedBlank && (brightnessMode == 0 || sounds.nightQuiet) && lightSensor != null;
         if (wanted == lightRegistered) return;
         lightRegistered = wanted;
         if (wanted) {
@@ -1979,6 +2002,7 @@ public final class HudActivity extends Activity {
             if (parkedBlank) {
                 if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                     parkedBlank = false;
+                    enterStandbyPower(false);
                     performClick();
                     invalidate();
                 }
