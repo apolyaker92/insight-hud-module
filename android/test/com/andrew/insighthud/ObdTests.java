@@ -176,6 +176,14 @@ public final class ObdTests {
         policy.mode = 2;
         check("mute label", policy.label(false).equals("MUTE"));
 
+        check("gps speed converts m/s to mph", Math.abs(SpeedSource.gpsMph(true, 20f, 500) - 44.7) < 0.1);
+        check("gps jitter at a standstill reads zero", SpeedSource.gpsMph(true, 0.3f, 500) == 0.0);
+        check("a fix without speed is ignored", SpeedSource.gpsMph(false, 20f, 500) == null);
+        check("an old fix is ignored", SpeedSource.gpsMph(true, 20f, SpeedSource.GPS_MAX_AGE_MS + 1) == null);
+        check("the car's speed wins over gps", SpeedSource.choose(31d, 33d) == 31d);
+        check("gps fills in when the car has none", SpeedSource.choose(null, 33d) == 33d);
+        check("nothing when neither has speed", SpeedSource.choose(null, null) == null);
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }

@@ -929,7 +929,19 @@ public final class HudActivity extends Activity {
         hud.invalidate();
     }
 
+    /** GPS speed in mph, or null when GPS is off, has no fix, or the fix is too old. */
+    private Double gpsSpeedMph() {
+        Location fix = gpsFix;
+        if (fix == null || !gpsRegistered) return null;
+        long age = (SystemClock.elapsedRealtimeNanos() - fix.getElapsedRealtimeNanos()) / 1000000;
+        return SpeedSource.gpsMph(fix.hasSpeed(), fix.getSpeed(), age);
+    }
+
     private void updateReadings(ObdBluetooth.Readings update) {
+        if (update != null && update.speedMph == null && !demo) {
+            Double fromGps = gpsSpeedMph();
+            if (fromGps != null) update = update.withSpeed(fromGps);
+        }
         readings = update;
         if (update != null) {
             seenGauge[0] |= update.throttle != null;
@@ -1494,10 +1506,19 @@ public final class HudActivity extends Activity {
             text(canvas, "BT SETUP", 1177, 67, 13, MUTED, false, Paint.Align.CENTER);
             line(canvas, 40, 88, 1240, 88, LINE);
             text(canvas, "01  VEHICLE SPEED", 65, 127, 19, AMBER, false);
+            boolean speedFromGps = false;
+            if (!demo && displayed.speedMph == null) {
+                Double fromGps = gpsSpeedMph();
+                if (fromGps != null) {
+                    displayed = displayed.withSpeed(fromGps);
+                    speedFromGps = true;
+                }
+            }
             String speed = wholeReading(displayed.speedMph, "---");
             float speedWidth = 105;
             number(canvas, speed, 65 + (3 - speed.length()) * speedWidth * 1.2f, 142, speedWidth);
             text(canvas, "MPH", 477, 332, 32, AMBER, false);
+            if (speedFromGps) text(canvas, "GPS", 477, 358, 14, MUTED, false);
             drawWarmup(canvas, displayed.coolantF);
             drawRpmTrace(canvas, displayed.rpm);
 

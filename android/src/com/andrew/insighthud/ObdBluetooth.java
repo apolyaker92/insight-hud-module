@@ -67,6 +67,11 @@ final class ObdBluetooth {
             this.voltage = voltage;
             this.load = load;
         }
+
+        /** The same readings with the speed replaced (used when the speed comes from GPS). */
+        Readings withSpeed(Double mph) {
+            return new Readings(mph, rpm, coolantF, intakeF, voltage, load, throttle, fuelGph, mpg);
+        }
     }
 
     private static final class Session {
@@ -212,7 +217,12 @@ final class ObdBluetooth {
         boolean throttleSupported = ObdProtocol.supports(supported, 0x11);
         boolean hasInputs = speedSupported || rpmSupported || ObdProtocol.supports(supported, 5)
                 || ObdProtocol.supports(supported, 15) || ObdProtocol.supports(supported, 4) || throttleSupported;
+        // Speed, rpm, throttle and load go out every pass; the slow-moving readings only every SLOW_EVERY_MS.
+        Double coolant = null, intake = null, voltage = null;
+        long slowDueAt = 0, windowStart = SystemClock.elapsedRealtime();
+        int passes = 0;
         while (!session.cancelled) {
+            long passStart = SystemClock.elapsedRealtime();
             String[] probe = pendingProbe;
             if (probe != null) {
                 pendingProbe = null;
@@ -221,27 +231,44 @@ final class ObdBluetooth {
                     Log.i(PROBE_TAG, request + " -> " + reply);
                 }
             }
-            Double coolant = ObdProtocol.supports(supported, 5)
-                    ? ObdProtocol.temperatureF(command(session, "0105", 2000), 5) : null;
-            Double intake = ObdProtocol.supports(supported, 15)
-                    ? ObdProtocol.temperatureF(command(session, "010F", 2000), 15) : null;
+            boolean slowDue = passStart >= slowDueAt;
+            if (slowDue) {
+                slowDueAt = passStart + SLOW_EVERY_MS;
+                coolant = ObdProtocol.supports(supported, 5)
+                        ? ObdProtocol.temperatureF(command(session, "0105", 2000), 5) : null;
+                intake = ObdProtocol.supports(supported, 15)
+                        ? ObdProtocol.temperatureF(command(session, "010F", 2000), 15) : null;
+                voltage = ObdProtocol.voltage(command(session, "ATRV", 2000));
+            }
             Double load = ObdProtocol.supports(supported, 4)
                     ? ObdProtocol.engineLoad(command(session, "0104", 2000)) : null;
-            Double voltage = ObdProtocol.voltage(command(session, "ATRV", 2000));
             Double rpm = rpmSupported ? ObdProtocol.engineRpm(command(session, "010C", 2000)) : null;
             Double speed = speedSupported ? ObdProtocol.speedMph(command(session, "010D", 2000)) : null;
             Double throttle = throttleSupported ? ObdProtocol.throttle(command(session, "0111", 2000)) : null;
             Double fuelGph = ObdProtocol.fuelGallonsPerHour(load, rpm);
             Double mpg = ObdProtocol.estimatedMpg(speed, fuelGph);
-            if (hasInputs && speed == null && rpm == null && coolant == null && intake == null && load == null
-                    && throttle == null) emptyCycles++;
+            if (hasInputs && speed == null && rpm == null && (!slowDue || coolant == null) && (!slowDue || intake == null)
+                    && load == null && throttle == null) emptyCycles++;
             else emptyCycles = 0;
             if (emptyCycles >= 3) throw new IOException("ECU stopped responding");
             publish(session, session.address.equals(SimulatedElm.ADDRESS) ? "SIM LIVE" : "BT LIVE",
                     new Readings(speed, rpm, coolant, intake, voltage, load, throttle, fuelGph, mpg));
-            Thread.sleep(1000);
+            passes++;
+            long now = SystemClock.elapsedRealtime();
+            if (now - windowStart >= 10_000) {
+                Log.i("HudObdRate", String.format(Locale.US, "%.1f updates/s (speed+rpm)",
+                        passes * 1000.0 / (now - windowStart)));
+                passes = 0;
+                windowStart = now;
+            }
+            // The adapter normally paces this loop; the floor only stops an instant (simulated) one spinning.
+            long spare = MIN_PASS_MS - (now - passStart);
+            if (spare > 0) Thread.sleep(spare);
         }
     }
+
+    private static final long SLOW_EVERY_MS = 10_000;
+    private static final long MIN_PASS_MS = 150;
 
     private String command(Session session, String request, long timeoutMs) throws IOException, InterruptedException {
         if (session.cancelled) throw new InterruptedException();
