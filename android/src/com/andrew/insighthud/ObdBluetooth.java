@@ -147,7 +147,7 @@ final class ObdBluetooth {
                 boolean simulated = SimulatedElm.ADDRESS.equals(session.address);
                 if (!simulated && !adapter.isEnabled()) {
                     publish(session, "BLUETOOTH OFF", null);
-                    Thread.sleep(5000);
+                    Thread.sleep(1000);
                     continue;
                 }
                 if (simulated) {

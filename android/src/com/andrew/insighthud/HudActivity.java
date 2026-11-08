@@ -483,6 +483,7 @@ public final class HudActivity extends Activity {
             shutdownStartedAt = 0;
             parkedBlank = false;
             enterStandbyPower(false);
+            setBluetoothPower(true);
             startupPending = true;
             updateScreenPower();
             startTripAnimation();
@@ -613,6 +614,7 @@ public final class HudActivity extends Activity {
         parkedBlank = true;
         updateScreenPower();
         enterStandbyPower(true);
+        if (!accessoryActive) setBluetoothPower(false);
         hud.invalidate();
     }
 
@@ -733,6 +735,23 @@ public final class HudActivity extends Activity {
             }
         }
         return Math.max(0, wall);
+    }
+
+    /**
+     * Switches the Bluetooth radio so it is off while parked. Android only lets privileged system apps do this;
+     * anywhere else the call is refused and nothing changes (the link code still waits for Bluetooth to appear).
+     */
+    @SuppressWarnings("deprecation")
+    private void setBluetoothPower(boolean on) {
+        if (bluetooth == null || !hasBluetoothPermission()) return;
+        if (!on && !preferences.getBoolean("btParkOff", true)) return;
+        try {
+            if (bluetooth.isEnabled() == on) return;
+            boolean done = on ? bluetooth.enable() : bluetooth.disable();
+            Log.i("HudBt", (on ? "enable" : "disable") + " requested, accepted=" + done);
+        } catch (SecurityException refused) {
+            Log.i("HudBt", "not allowed to switch Bluetooth (not a privileged app)");
+        }
     }
 
     private boolean hasBluetoothPermission() {
@@ -954,7 +973,8 @@ public final class HudActivity extends Activity {
                         "Brightness: " + BRIGHTNESS_NAMES[brightnessMode],
                         "Sound: " + SoundPolicy.MODE_NAMES[sounds.mode],
                         "Volume: " + Math.round(SoundPolicy.LEVELS[sounds.level] * 100) + "%",
-                        "Night quiet: " + (sounds.nightQuiet ? "ON" : "OFF")}, (dialog, choice) -> {
+                        "Night quiet: " + (sounds.nightQuiet ? "ON" : "OFF"),
+                        "Bluetooth off when parked: " + (preferences.getBoolean("btParkOff", true) ? "ON" : "OFF")}, (dialog, choice) -> {
                     switch (choice) {
                         case 0:
                             chooseAdapter();
@@ -994,6 +1014,9 @@ public final class HudActivity extends Activity {
                             break;
                         case 11:
                             toggleNightQuiet();
+                            break;
+                        case 12:
+                            preferences.edit().putBoolean("btParkOff", !preferences.getBoolean("btParkOff", true)).apply();
                             break;
                     }
                 }).setNegativeButton("CLOSE", null).show();
