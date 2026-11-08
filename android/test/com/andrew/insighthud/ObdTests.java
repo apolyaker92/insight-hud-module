@@ -184,6 +184,34 @@ public final class ObdTests {
         check("gps fills in when the car has none", SpeedSource.choose(null, 33d) == 33d);
         check("nothing when neither has speed", SpeedSource.choose(null, null) == null);
 
+        check("search tries the Insight protocol first", EcuSearch.order(null)[0].equals("ATSP3"));
+        check("search remembers the protocol that worked", EcuSearch.order("ATSP0")[0].equals("ATSP0")
+                && EcuSearch.order("ATSP0").length == 4 && EcuSearch.order("ATSP0")[1].equals("ATSP3"));
+        SimulatedElm fussy = new SimulatedElm(() -> fakeNow);
+        fussy.failBusInits = 1;
+        InputStream fussyIn = fussy.input();
+        OutputStream fussyOut = fussy.output();
+        EcuSearch.Result retried = EcuSearch.find((cmd, timeout) -> ask(fussyIn, fussyOut, cmd), null);
+        check("a failed first bus init is retried on the same protocol", retried.protocol.equals("ATSP3"));
+        SimulatedElm autoOnly = new SimulatedElm(() -> fakeNow);
+        autoOnly.onlyAnswersOn = "ATSP0";
+        InputStream autoIn = autoOnly.input();
+        OutputStream autoOut = autoOnly.output();
+        EcuSearch.Result fallback = EcuSearch.find((cmd, timeout) -> ask(autoIn, autoOut, cmd), null);
+        check("it falls back to auto-detect when ISO 9141 will not answer",
+                fallback.protocol.equals("ATSP0") && ObdProtocol.supports(fallback.supported, 0x0C));
+        SimulatedElm dead = new SimulatedElm(() -> fakeNow);
+        dead.onlyAnswersOn = "NONE";
+        InputStream deadIn = dead.input();
+        OutputStream deadOut = dead.output();
+        boolean gaveUp = false;
+        try {
+            EcuSearch.find((cmd, timeout) -> ask(deadIn, deadOut, cmd), null);
+        } catch (IOException expected) {
+            gaveUp = true;
+        }
+        check("it gives up cleanly when nothing answers", gaveUp);
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }

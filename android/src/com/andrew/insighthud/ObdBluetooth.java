@@ -183,13 +183,15 @@ final class ObdBluetooth {
                 }
                 publish(session, "ADAPTER SETUP", null);
                 command(session, "ATZ", 5000);
-                for (String setup : new String[]{"ATE0", "ATL0", "ATS1", "ATH0", "ATSP3", "ATST64"}) {
+                for (String setup : new String[]{"ATE0", "ATL0", "ATS1", "ATH0", "ATST64"}) {
                     if (!command(session, setup, 2000).contains("OK")) throw new IOException("Adapter setup failed");
                 }
                 publish(session, "ECU SEARCH", null);
-                byte[] supported = ObdProtocol.payload(command(session, "0100", 15000), 0, 4);
-                if (supported == null) throw new IOException("ECU did not respond");
-                poll(session, supported);
+                EcuSearch.Result ecu = EcuSearch.find((request, timeout) -> command(session, request, timeout),
+                        workingProtocol);
+                if (!ecu.protocol.equals(workingProtocol)) Log.i("HudObd", "ECU answered on " + ecu.protocol);
+                workingProtocol = ecu.protocol;
+                poll(session, ecu.supported);
             } catch (SecurityException denied) {
                 publish(session, "BT PERMISSION", null);
                 return;
@@ -267,6 +269,8 @@ final class ObdBluetooth {
         }
     }
 
+    /** The protocol the ECU last answered on; tried first on reconnects. */
+    private volatile String workingProtocol;
     private static final long SLOW_EVERY_MS = 10_000;
     private static final long MIN_PASS_MS = 150;
 

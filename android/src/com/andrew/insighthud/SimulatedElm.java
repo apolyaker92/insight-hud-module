@@ -25,6 +25,10 @@ final class SimulatedElm implements Closeable {
     private int readPosition;
     private boolean closed;
     private boolean initialised;
+    private String protocol = "";
+    /** Test hooks: make the bus init fail like a fussy adapter. */
+    String onlyAnswersOn;
+    int failBusInits;
 
     SimulatedElm(Clock clock) {
         this.clock = clock;
@@ -97,9 +101,17 @@ final class SimulatedElm implements Closeable {
                 double volts = 13.6 + 0.2 * Math.sin(seconds());
                 return reply(String.format(Locale.US, "%.1fV", volts));
             }
+            if (request.startsWith("ATSP")) protocol = request;
             return reply("OK");
         }
         if (request.equals("0100")) {
+            if (failBusInits > 0) {
+                failBusInits--;
+                return reply("SEARCHING...", "BUS INIT: ERROR", "UNABLE TO CONNECT");
+            }
+            if (onlyAnswersOn != null && !onlyAnswersOn.equals(protocol)) {
+                return reply("SEARCHING...", "UNABLE TO CONNECT");
+            }
             if (!initialised) {
                 initialised = true;
                 return reply("SEARCHING...", "BUS INIT: OK", "41 00 1E 1C 90 00");
