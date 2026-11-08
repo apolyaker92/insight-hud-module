@@ -290,6 +290,7 @@ public final class HudActivity extends Activity {
         sounds.level = Math.max(0, Math.min(SoundPolicy.LEVELS.length - 1,
                 preferences.getInt("soundLevel", SoundPolicy.LEVELS.length - 1)));
         sounds.nightQuiet = preferences.getBoolean("nightQuiet", true);
+        applyOrientation();
         mapPreview = preferences.getBoolean("mapPreview", false);
         headingUp = preferences.getBoolean("headingUp", false);
         mapRange = Math.max(0, Math.min(RANGE_NAMES.length - 1, preferences.getInt("mapRange", 0)));
@@ -392,6 +393,13 @@ public final class HudActivity extends Activity {
         if (gain <= 0f) return;
         float volume = Math.min(1f, base * gain);
         switchSounds.play(id, volume, volume, 1, 0, 1);
+    }
+
+    /** Landscape either way up, for a phone mounted with its top edge on the left or the right. */
+    private void applyOrientation() {
+        setRequestedOrientation(preferences.getBoolean("flipScreen", true)
+                ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+                : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
     }
 
     private void saveSoundSettings() {
@@ -986,7 +994,8 @@ public final class HudActivity extends Activity {
                         "Sound: " + SoundPolicy.MODE_NAMES[sounds.mode],
                         "Volume: " + Math.round(SoundPolicy.LEVELS[sounds.level] * 100) + "%",
                         "Night quiet: " + (sounds.nightQuiet ? "ON" : "OFF"),
-                        "Bluetooth off when parked: " + (preferences.getBoolean("btParkOff", true) ? "ON" : "OFF")}, (dialog, choice) -> {
+                        "Bluetooth off when parked: " + (preferences.getBoolean("btParkOff", true) ? "ON" : "OFF"),
+                        "Flip screen 180: " + (preferences.getBoolean("flipScreen", true) ? "ON" : "OFF")}, (dialog, choice) -> {
                     switch (choice) {
                         case 0:
                             chooseAdapter();
@@ -1029,6 +1038,10 @@ public final class HudActivity extends Activity {
                             break;
                         case 12:
                             preferences.edit().putBoolean("btParkOff", !preferences.getBoolean("btParkOff", true)).apply();
+                            break;
+                        case 13:
+                            preferences.edit().putBoolean("flipScreen", !preferences.getBoolean("flipScreen", true)).apply();
+                            applyOrientation();
                             break;
                     }
                 }).setNegativeButton("CLOSE", null).show();
