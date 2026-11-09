@@ -69,6 +69,7 @@ public final class HudActivity extends Activity {
     private boolean demo;
     private boolean mapPreview;
     private boolean fullMap;
+    private boolean mapReadout = true; // speed, limit and road plate over the full-screen map
     private boolean roadInfoOn;
     private OfflineRoadMap.RoadInfo roadInfo;
     private long lastLookupAt;
@@ -330,6 +331,7 @@ public final class HudActivity extends Activity {
         applyOrientation();
         mapPreview = preferences.getBoolean("mapPreview", false);
         fullMap = preferences.getBoolean("fullMap", false);
+        mapReadout = preferences.getBoolean("mapReadout", true);
         roadInfoOn = preferences.getBoolean("roadInfo", true);
         headingUp = preferences.getBoolean("headingUp", false);
         mapRange = Math.max(0, Math.min(RANGE_NAMES.length - 1, preferences.getInt("mapRange", 0)));
@@ -1094,6 +1096,12 @@ public final class HudActivity extends Activity {
         actions.add(() -> activateControl(4));
         labels.add("Brightness: " + BRIGHTNESS_NAMES[brightnessMode]);
         actions.add(() -> activateControl(2));
+        labels.add("Full map readout (speed, limit, road): " + (mapReadout ? "ON" : "OFF"));
+        actions.add(() -> {
+            mapReadout = !mapReadout;
+            preferences.edit().putBoolean("mapReadout", mapReadout).apply();
+            hud.invalidate();
+        });
         labels.add("Colors: " + (preferences.getInt("palette", 0) == 0 ? "GREEN" : "AMBER"));
         actions.add(() -> {
             preferences.edit().putInt("palette", preferences.getInt("palette", 0) == 0 ? 1 : 0).apply();
@@ -1715,7 +1723,7 @@ public final class HudActivity extends Activity {
                 drawMetrics(canvas, displayed);
             }
             if (full) {
-                drawMapReadouts(canvas, displayed, speed, speedFromGps);
+                if (mapReadout) drawMapReadouts(canvas, displayed, speed, speedFromGps);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(ground(0xF0));
                 canvas.drawRect(MAP_RANGE_LEFT - 3, 95, MAP_RIGHT + 1, 125, paint);
