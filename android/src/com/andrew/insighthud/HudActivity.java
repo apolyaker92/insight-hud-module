@@ -1833,9 +1833,9 @@ public final class HudActivity extends Activity {
             canvas.drawRect(plateLeft, plateTop, plateRight, plateBottom, paint);
             line(canvas, plateLeft, plateTop, plateRight, plateTop, LINE);
             line(canvas, plateRight, plateTop, plateRight, plateBottom, LINE);
-            text(canvas, speed, plateLeft + 140, plateBottom - 36, 104, AMBER, true, Paint.Align.RIGHT);
-            text(canvas, fromGps ? "MPH GPS" : "MPH", plateLeft + 152, plateBottom - 38, 24, AMBER, false);
-            text(canvas, wholeReading(displayed.rpm, "----") + " RPM", plateLeft + 152, plateBottom - 66,
+            text(canvas, speed, plateLeft + 196, plateBottom - 34, 84, AMBER, true, Paint.Align.RIGHT);
+            text(canvas, fromGps ? "MPH GPS" : "MPH", plateLeft + 210, plateBottom - 36, 22, AMBER, false);
+            text(canvas, wholeReading(displayed.rpm, "----") + " RPM", plateLeft + 210, plateBottom - 64,
                     18, MUTED, false);
         }
 
