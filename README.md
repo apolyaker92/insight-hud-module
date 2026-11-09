@@ -26,6 +26,12 @@ The right panel shows throttle position, engine load and an estimated MPG (from 
 
 Choose the simulated adapter under BT SETUP / Choose paired OBD adapter to drive the real polling and parsing code from a scripted drive cycle. Run `sh android/test/run-tests.sh` for the plain-Java parser and simulator checks (no Android SDK needed).
 
+## Road info
+
+With a detailed map pack installed the HUD shows, from the GPS fix alone: the posted speed limit in a LIMIT box (solid when you are over it, and a quiet OVER LIMIT banner after a few seconds well over), the road and town you are on, the nearest fuel with its distance and direction, a compass heading and a clock in the header. It also looks ahead along your heading and shows the nearest thing worth knowing about: a RAIL CROSSING, a speed or red-light CAMERA or a CURVE (with the speed it advises) each raise a banner, while traffic signals, stop signs, highway exits and rest areas appear in the readout only. Turn it all off with Road info in BT SETUP. Every drive is also logged to `logs/drive-DATE.csv` in the app's external files folder (a row a second: time, position, GPS and OBD speed, rpm, throttle, load, temperatures, mpg, limit and road).
+
+The limits, names, signals, cameras and the rest come from OpenStreetMap, so they are only as good as its volunteers' tagging; many rural roads have no limit, and a camera or crossing that nobody mapped will not warn.
+
 ## Offline road data
 
 The included Albany road database and optional East Coast road pack are derived from [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright) and available under the [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/). The bundled Albany fallback covers 42.49°–42.85° N and 74.03°–73.49° W.

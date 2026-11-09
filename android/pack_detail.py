@@ -1,5 +1,9 @@
 """Build a detailed pack from one Geofabrik PBF: roads with street names, rail and water, plus the data
-for road info on the HUD: speed limits, the road you are on, the nearest town and the nearest fuel.
+for road info on the HUD: speed limits, the road you are on, the nearest town and the nearest fuel, and the
+points the HUD warns about ahead: signals, stop signs, rail crossings, cameras, highway exits, rest areas and
+sharp curves.
+
+Everything that is a point rides in the pois table, told apart by kind (see POI_KINDS).
 
 Written to hud-roads.db (wide) or hud-local.db (one area). Merge several state packs with merge_packs.py.
 """
@@ -31,6 +35,13 @@ EXTRA_SCHEMA = """
         PRIMARY KEY (tx, ty, kind, name, x, y)) WITHOUT ROWID;
 """
 
+# pois.kind values. The HUD reads the same numbers (OfflineRoadMap).
+FUEL, SIGNAL, STOP, CROSSING, CAMERA, EXIT, REST, CURVE = 1, 2, 3, 4, 5, 6, 7, 8
+CURVE_MIN_TURN = 40.0      # degrees of turn within the look window
+CURVE_WINDOW_M = 70.0      # how far either side of a vertex the turn is measured over
+CURVE_SPACING_M = 200.0    # at most one curve warning per this much road
+LATERAL_G = 0.22           # comfortable cornering, for the advised speed
+
 SPEED = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(mph|km/h|kmh|kph)?\s*$", re.IGNORECASE)
 
 
@@ -46,6 +57,86 @@ def parse_maxspeed(value):
     mph = number if unit == "mph" else number * 0.621371  # OSM's default unit is km/h
     mph = int(round(mph / 5.0) * 5) if unit != "mph" else int(round(mph))
     return mph if 5 <= mph <= 85 else 0
+
+
+def meters_per_tile(latitude):
+    return 40_075_016.686 / (1 << ZOOM) * math.cos(math.radians(latitude))
+
+
+def curve_points(points, meters):
+    """Sharp bends along one way. points are tile-space (x, y) or None; returns (x, y, advised_mph) tuples."""
+    found = []
+    run = []
+    for point in points + [None]:
+        if point is not None:
+            run.append(point)
+            continue
+        if len(run) >= 3:
+            found.extend(_run_curves(run, meters))
+        run = []
+    return found
+
+
+def _run_curves(run, meters):
+    xs = [p[0] * meters for p in run]
+    ys = [p[1] * meters for p in run]
+    cumulative = [0.0]
+    for i in range(1, len(run)):
+        cumulative.append(cumulative[-1] + math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]))
+    turns = [0.0] * len(run)
+    radii = [float("inf")] * len(run)
+    for i in range(1, len(run) - 1):
+        j = i - 1
+        while j > 0 and cumulative[i] - cumulative[j] < CURVE_WINDOW_M:
+            j -= 1
+        k = i + 1
+        while k < len(run) - 1 and cumulative[k] - cumulative[i] < CURVE_WINDOW_M:
+            k += 1
+        ax, ay = xs[i] - xs[j], ys[i] - ys[j]
+        bx, by = xs[k] - xs[i], ys[k] - ys[i]
+        if math.hypot(ax, ay) < 15 or math.hypot(bx, by) < 15:
+            continue
+        angle = abs(math.degrees(math.atan2(ax * by - ay * bx, ax * bx + ay * by)))
+        turns[i] = angle
+        chord = math.hypot(xs[k] - xs[j], ys[k] - ys[j])
+        area2 = abs(ax * by - ay * bx)  # twice the triangle's area
+        if area2 > 1e-6:
+            radii[i] = math.hypot(ax, ay) * math.hypot(bx, by) * chord / (2 * area2)
+    result = []
+    last_at = -1e9
+    for i in range(1, len(run) - 1):
+        if turns[i] < CURVE_MIN_TURN:
+            continue
+        lo, hi = max(1, i - 3), min(len(run) - 2, i + 3)
+        if turns[i] < max(turns[lo:hi + 1]) or cumulative[i] - last_at < CURVE_SPACING_M:
+            continue
+        last_at = cumulative[i]
+        speed = math.sqrt(LATERAL_G * 9.81 * radii[i]) * 2.23694 if radii[i] != float("inf") else 70
+        advised = int(min(70, max(10, round(speed / 5.0) * 5)))
+        result.append((run[i][0], run[i][1], advised))
+    return result
+
+
+def point_feature(tags):
+    """The (kind, name) a tagged point becomes, or None when it is not something the HUD warns about."""
+    highway = tags.get("highway")
+    if highway == "traffic_signals":
+        return SIGNAL, ""
+    if highway == "stop":
+        return STOP, ""
+    if tags.get("railway") == "level_crossing":
+        return CROSSING, ""
+    enforcement = tags.get("enforcement")
+    if highway == "speed_camera" or enforcement in ("maxspeed", "average_speed", "traffic_signals", "red_light"):
+        return CAMERA, "RED LIGHT" if enforcement in ("traffic_signals", "red_light") else "SPEED"
+    if highway == "motorway_junction":
+        ref = tags.get("ref", "").split(";")[0].strip()
+        name = tags.get("name", "").split(";")[0].strip()
+        label = " / ".join(part for part in ((f"EXIT {ref}" if ref else ""), name.upper()) if part)
+        return (EXIT, label[:36]) if label else None
+    if highway in ("rest_area", "services"):
+        return REST, (tags.get("name") or ("REST AREA" if highway == "rest_area" else "SERVICES")).upper()[:28]
+    return None
 
 
 def classify(tags):
@@ -91,18 +182,29 @@ def read_extract(source, bounds):
     processor = (osmium.FileProcessor(source).with_locations()
                  .with_filter(osmium.filter.EntityFilter(bits.NODE | bits.WAY))
                  .with_filter(osmium.filter.KeyFilter("highway", "railway", "waterway", "natural", "place",
-                                                      "amenity")))
+                                                      "amenity", "enforcement")))
     source_date = processor.header.get("osmosis_replication_timestamp")
     for item in processor:
         tags = item.tags
         if isinstance(item, osmium.osm.Node):
             place, amenity = tags.get("place"), tags.get("amenity")
-            if place in PLACE_RANK and tags.get("name") and inside(item.location):
+            feature = point_feature(tags) if inside(item.location) else None
+            if feature is not None:
+                x, y = project(item.location.lat, item.location.lon)
+                pois.add((int(x), int(y), feature[0], feature[1], x, y))
+            elif place in PLACE_RANK and tags.get("name") and inside(item.location):
                 x, y = project(item.location.lat, item.location.lon)
                 places[int(x), int(y), tags["name"].upper()[:28], PLACE_RANK[place]] = (x, y)
             elif amenity == "fuel" and inside(item.location):
                 x, y = project(item.location.lat, item.location.lon)
                 pois.add((int(x), int(y), 1, (tags.get("brand") or tags.get("name") or "FUEL").upper()[:24], x, y))
+            continue
+        if tags.get("highway") in ("rest_area", "services"):
+            first = next((node.location for node in item.nodes if inside(node.location)), None)
+            if first is not None:
+                feature = point_feature(tags)
+                x, y = project(first.lat, first.lon)
+                pois.add((int(x), int(y), feature[0], feature[1], x, y))
             continue
         if tags.get("amenity") == "fuel" and not tags.get("highway"):
             first = next((node.location for node in item.nodes if inside(node.location)), None)
@@ -128,6 +230,11 @@ def read_extract(source, bounds):
             if not seen or max(max(p[0] for p in seen) - min(p[0] for p in seen),
                                max(p[1] for p in seen) - min(p[1] for p in seen)) < MIN_POND:
                 continue
+        if category and kind >= 1 and tags.get("junction") not in ("roundabout", "circular"):
+            anchor = next((node.location for node in item.nodes if node.location.valid()), None)
+            if anchor is not None:
+                for x, y, advised in curve_points(points, meters_per_tile(anchor.lat)):
+                    pois.add((int(x), int(y), CURVE, str(advised), x, y))
         previous = None
         for point in points:
             if point is not None and previous is not None:
@@ -168,14 +275,14 @@ def write_pack(output, bounds, args_name, center, source):
             "name": args_name, "zoom": ZOOM, "encoding": "uint16",
             "center_lat": center[0], "center_lon": center[1],
             "source": "© OpenStreetMap contributors", "license": "https://www.openstreetmap.org/copyright",
-            "source_date": source_date, "extracts": source.name, "detail": "streets,rail,water,limits,places,fuel",
+            "source_date": source_date, "extracts": source.name, "detail": "streets,rail,water,limits,places,fuel,ahead",
             **geographic_bounds(database),
         }
         with database:
             database.executemany("INSERT INTO metadata VALUES (?, ?)", metadata.items())
     temporary.replace(output)
     print(f"{output.name}: {output.stat().st_size:,} bytes, {len(ways)} way rows, {len(places)} places, "
-          f"{len(pois)} fuel", flush=True)
+          f"{len(pois)} points", flush=True)
 
 
 def main():

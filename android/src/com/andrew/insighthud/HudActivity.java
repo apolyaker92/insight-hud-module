@@ -75,6 +75,8 @@ public final class HudActivity extends Activity {
     private double lastLookupLat, lastLookupLon;
     private long overSince, lastOverAlertAt;
     private DriveLog driveLog;
+    private Location previousFix;
+    private float derivedSpeedMps = Float.NaN;
     /** Repaints on the minute so the header clock stays right without any other redraw. */
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
@@ -163,7 +165,8 @@ public final class HudActivity extends Activity {
     private ObdBluetooth obd;
     private ObdBluetooth.Readings readings;
     private static final OfflineRoadMap.RoadInfo DEMO_ROAD_INFO =
-            new OfflineRoadMap.RoadInfo("DEMO AVENUE", 35, "DEMOVILLE", "DEMO FUEL", 1.2, "NE");
+            new OfflineRoadMap.RoadInfo("DEMO AVENUE", 35, "DEMOVILLE", "DEMO FUEL", 1.2, "NE",
+                    RoadLookup.SIGNAL, "", 300);
     private static final ObdBluetooth.Readings DEMO_READINGS = new ObdBluetooth.Readings(46d, 2400d, 188d, 85d, 13.8d, 42d, 28d, 0.87d, 52d);
     private static final ObdBluetooth.Readings EMPTY_READINGS = new ObdBluetooth.Readings(null, null, null, null, null, null);
     private static final float[] DEMO_RPM = {820, 880, 1100, 1550, 2250, 3250, 4500, 5000, 3550, 2950,
@@ -200,6 +203,8 @@ public final class HudActivity extends Activity {
     };
     private final Runnable expireGpsFix = () -> {
         gpsFix = null;
+        previousFix = null;
+        derivedSpeedMps = Float.NaN;
         roadInfo = null;
         lastLookupAt = 0;
         overSince = 0;
@@ -223,6 +228,19 @@ public final class HudActivity extends Activity {
                 raiseAlert("GPS LOCKED", Alerts.INFO);
             }
             scheduleGpsAvailability(age);
+            derivedSpeedMps = Float.NaN;
+            if (previousFix != null) {
+                float seconds = (location.getElapsedRealtimeNanos() - previousFix.getElapsedRealtimeNanos()) / 1e9f;
+                float metres = previousFix.distanceTo(location);
+                if (seconds > 0.3f && seconds < 6f && metres >= 5f) {
+                    derivedSpeedMps = metres / seconds;
+                    // Providers that send no bearing (and test fixes) still give a heading from the movement.
+                    if (!location.hasBearing() && derivedSpeedMps >= 2f) {
+                        gpsCourse = (float) RoadLookup.normalizeBearing(previousFix.bearingTo(location));
+                    }
+                }
+            }
+            previousFix = location;
             if (location.hasBearing() && location.hasSpeed() && location.getSpeed() >= 2f) {
                 gpsCourse = location.getBearing();
             }
@@ -949,9 +967,12 @@ public final class HudActivity extends Activity {
         lastLookupAt = now;
         lastLookupLat = location.getLatitude();
         lastLookupLon = location.getLongitude();
-        roadMap.lookup(location.getLatitude(), location.getLongitude(), info -> {
+        Double speed = currentSpeedMph();
+        roadMap.lookup(location.getLatitude(), location.getLongitude(),
+                gpsCourse, speed == null ? 0 : speed, info -> {
             roadInfo = info;
             checkOverLimit();
+            announceAhead(info);
             hud.invalidate();
         });
     }
@@ -960,6 +981,32 @@ public final class HudActivity extends Activity {
     private OfflineRoadMap.RoadInfo shownRoadInfo() {
         if (!roadInfoOn) return null;
         return demo ? DEMO_ROAD_INFO : gpsFix == null ? null : roadInfo;
+    }
+
+    /** A banner for the hazards that deserve one; signals, stop signs, exits and rest areas just show in the readout. */
+    private void announceAhead(OfflineRoadMap.RoadInfo info) {
+        if (info == null || demo) return;
+        if (info.aheadKind == RoadLookup.CROSSING) raiseAlert("RAIL CROSSING AHEAD", Alerts.WARN);
+        else if (info.aheadKind == RoadLookup.CAMERA) raiseAlert("CAMERA AHEAD", Alerts.INFO);
+        else if (info.aheadKind == RoadLookup.CURVE) raiseAlert("CURVE AHEAD", Alerts.INFO);
+    }
+
+    /** The warning line for the thing ahead, such as "SIGNAL  450 FT", or null when nothing is ahead. */
+    private static String aheadLine(OfflineRoadMap.RoadInfo info) {
+        if (info == null || info.aheadKind == 0) return null;
+        String what;
+        switch (info.aheadKind) {
+            case RoadLookup.SIGNAL: what = "SIGNAL"; break;
+            case RoadLookup.STOP: what = "STOP SIGN"; break;
+            case RoadLookup.CROSSING: what = "RAIL CROSSING"; break;
+            case RoadLookup.CAMERA: what = info.aheadName + " CAMERA"; break;
+            case RoadLookup.CURVE: what = "CURVE  ADVISED " + info.aheadName; break;
+            default: what = info.aheadName == null ? "" : info.aheadName; break;
+        }
+        double feet = info.aheadMeters * 3.28084;
+        String distance = feet < 800 ? Math.max(50, Math.round(feet / 50) * 50) + " FT"
+                : String.format(Locale.US, "%.1f MI", info.aheadMeters / 1609.344);
+        return what + "  " + distance;
     }
 
     private Double currentSpeedMph() {
@@ -986,7 +1033,8 @@ public final class HudActivity extends Activity {
         Location fix = gpsFix;
         if (fix == null || !gpsRegistered) return null;
         long age = (SystemClock.elapsedRealtimeNanos() - fix.getElapsedRealtimeNanos()) / 1000000;
-        return SpeedSource.gpsMph(fix.hasSpeed(), fix.getSpeed(), age);
+        boolean derived = !fix.hasSpeed() && !Float.isNaN(derivedSpeedMps);
+        return SpeedSource.gpsMph(fix.hasSpeed() || derived, derived ? derivedSpeedMps : fix.getSpeed(), age);
     }
 
     private void updateReadings(ObdBluetooth.Readings update) {
@@ -1596,6 +1644,8 @@ public final class HudActivity extends Activity {
             text(canvas, "INSIGHT", 60, 69, 24, AMBER, true);
             text(canvas, "HUD MODULE 2.3", 230, 68, 16, MUTED, false);
             text(canvas, clockText(), 640, 71, 30, AMBER, true, Paint.Align.CENTER);
+            String heading = headingText();
+            if (heading != null) text(canvas, heading, 730, 69, 20, MUTED, false);
             text(canvas, demo ? "[ DEMO - SIMULATED ]" : "[ " + linkStatus + " ]",
                     1115, 68, 16, AMBER, false, Paint.Align.RIGHT);
             border(canvas, 1134, 46, 1220, 77);
@@ -1663,7 +1713,9 @@ public final class HudActivity extends Activity {
                 if (fuelInfo != null && fuelInfo.fuelName != null) {
                     text(canvas, fuelLine(fuelInfo), 640, footer + 30, 14, MUTED, false, Paint.Align.CENTER);
                 }
-                text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
+                String ahead = aheadLine(shownRoadInfo());
+                if (ahead != null) text(canvas, ahead, 60, footer + 32, 20, AMBER, true);
+                else text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
                 text(canvas, brightText, 640, footer + 56, 12, MUTED, false, Paint.Align.CENTER);
                 text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 56, 12, MUTED, false);
                 text(canvas, "PHONE " + phoneState, 1220, footer + 31, 14, MUTED, false, Paint.Align.RIGHT);
@@ -1939,13 +1991,14 @@ public final class HudActivity extends Activity {
             float plateLeft = mapLeft() + 1;
             float plateRight = plateLeft + (info != null ? 440 : 330);
             float plateBottom = mapBottom() - 1;
-            float plateTop = plateBottom - (info != null ? 142 : 128);
+            String ahead = aheadLine(info);
+            float plateTop = plateBottom - (info != null ? (ahead != null ? 166 : 142) : 128);
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0xFF080602);
             canvas.drawRect(plateLeft, plateTop, plateRight, plateBottom, paint);
             line(canvas, plateLeft, plateTop, plateRight, plateTop, LINE);
             line(canvas, plateRight, plateTop, plateRight, plateBottom, LINE);
-            float base = plateBottom - (info != null ? 44 : 34);
+            float base = plateBottom - (info != null ? (ahead != null ? 68 : 44) : 34);
             text(canvas, speed, plateLeft + 196, base, 84, AMBER, true, Paint.Align.RIGHT);
             text(canvas, fromGps ? "MPH GPS" : "MPH", plateLeft + 210, base - 2, 22, AMBER, false);
             text(canvas, wholeReading(displayed.rpm, "----") + " RPM", plateLeft + 210, base - 30, 18, MUTED, false);
@@ -1953,6 +2006,7 @@ public final class HudActivity extends Activity {
                 text(canvas, roadLine(info, 42), plateLeft + 12, plateTop + 24, 15, MUTED, false);
                 drawLimitBadge(canvas, plateRight - 112, plateTop + 36, 100, 82, info.limitMph, displayed.speedMph);
                 if (info.fuelName != null) text(canvas, fuelLine(info), plateLeft + 12, plateBottom - 10, 12, MUTED, false);
+                if (ahead != null) text(canvas, ahead, plateLeft + 12, plateBottom - 34, 20, AMBER, true);
             }
         }
 
@@ -1960,6 +2014,13 @@ public final class HudActivity extends Activity {
         private String clockText() {
             String pattern = android.text.format.DateFormat.is24HourFormat(HudActivity.this) ? "HH:mm" : "h:mm a";
             return new SimpleDateFormat(pattern, Locale.US).format(new Date());
+        }
+
+        /** The heading as "NE 047", from the GPS course, or null without a fix and a direction of travel. */
+        private String headingText() {
+            if (demo) return "NE 045\u00b0";
+            if (gpsFix == null || Float.isNaN(gpsCourse)) return null;
+            return RoadLookup.compass(gpsCourse) + String.format(Locale.US, " %03d\u00b0", Math.round(gpsCourse) % 360);
         }
 
         private String roadLine(OfflineRoadMap.RoadInfo info, int max) {

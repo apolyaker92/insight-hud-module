@@ -238,6 +238,34 @@ public final class ObdTests {
         check("compass: north is up the screen", "N".equals(RoadLookup.bearing(0, -1)));
         check("compass: south-west", "SW".equals(RoadLookup.bearing(-1, 1)));
         check("miles", Math.abs(RoadLookup.metersToMiles(1609.344) - 1) < 1e-9);
+        check("bearing east is 90", Math.abs(RoadLookup.bearingDegrees(1, 0) - 90) < 1e-9);
+        check("bearing north-west is 315", Math.abs(RoadLookup.bearingDegrees(-1, -1) - 315) < 1e-9);
+        check("negative bearings wrap", Math.abs(RoadLookup.normalizeBearing(-150) - 210) < 1e-9
+                && Math.abs(RoadLookup.normalizeBearing(370) - 10) < 1e-9);
+        check("hazards outrank signals outrank exits", RoadLookup.aheadGroup(RoadLookup.CROSSING) == 0
+                && RoadLookup.aheadGroup(RoadLookup.CURVE) == 0 && RoadLookup.aheadGroup(RoadLookup.STOP) == 1
+                && RoadLookup.aheadGroup(RoadLookup.EXIT) == 2);
+        check("angle difference wraps", Math.abs(RoadLookup.angleDifference(350, 10) - 20) < 1e-9
+                && Math.abs(RoadLookup.angleDifference(90, 270) - 180) < 1e-9);
+        check("a signal 100 m dead ahead at 30 mph counts",
+                RoadLookup.aheadEligible(RoadLookup.SIGNAL, "", 100, 90, 90, 30));
+        check("a signal behind the car does not", !RoadLookup.aheadEligible(RoadLookup.SIGNAL, "", 100, 270, 90, 30));
+        check("a signal off to the side does not", !RoadLookup.aheadEligible(RoadLookup.SIGNAL, "", 100, 140, 90, 30));
+        check("a signal too far to matter at 30 mph does not",
+                !RoadLookup.aheadEligible(RoadLookup.SIGNAL, "", 400, 90, 90, 30));
+        check("the same signal does at 60 mph", RoadLookup.aheadEligible(RoadLookup.SIGNAL, "", 300, 90, 90, 60));
+        check("a signal underfoot is ignored", !RoadLookup.aheadEligible(RoadLookup.SIGNAL, "", 10, 90, 90, 30));
+        check("nothing counts without a course or when crawling",
+                !RoadLookup.aheadEligible(RoadLookup.SIGNAL, "", 100, 90, Double.NaN, 30)
+                        && !RoadLookup.aheadEligible(RoadLookup.SIGNAL, "", 100, 90, 90, 3));
+        check("exits and rest areas only count at highway speed",
+                !RoadLookup.aheadEligible(RoadLookup.EXIT, "EXIT 5", 500, 90, 90, 30)
+                        && RoadLookup.aheadEligible(RoadLookup.EXIT, "EXIT 5", 500, 90, 90, 60)
+                        && RoadLookup.aheadEligible(RoadLookup.REST, "REST AREA", 1000, 90, 90, 60));
+        check("a curve only warns when going faster than it advises",
+                RoadLookup.aheadEligible(RoadLookup.CURVE, "35", 100, 90, 90, 45)
+                        && !RoadLookup.aheadEligible(RoadLookup.CURVE, "35", 100, 90, 90, 34)
+                        && !RoadLookup.aheadEligible(RoadLookup.CURVE, "x", 100, 90, 90, 45));
 
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);

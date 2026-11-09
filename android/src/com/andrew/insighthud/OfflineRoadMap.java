@@ -77,14 +77,26 @@ final class OfflineRoadMap {
         final String fuelName;  // null when none is in range
         final double fuelMiles;
         final String fuelBearing;
+        /** The nearest thing worth a warning on the road ahead (a RoadLookup point kind), or 0 for none. */
+        final int aheadKind;
+        final String aheadName;
+        final double aheadMeters;
 
         RoadInfo(String road, int limitMph, String place, String fuelName, double fuelMiles, String fuelBearing) {
+            this(road, limitMph, place, fuelName, fuelMiles, fuelBearing, 0, null, Double.NaN);
+        }
+
+        RoadInfo(String road, int limitMph, String place, String fuelName, double fuelMiles, String fuelBearing,
+                 int aheadKind, String aheadName, double aheadMeters) {
             this.road = road;
             this.limitMph = limitMph;
             this.place = place;
             this.fuelName = fuelName;
             this.fuelMiles = fuelMiles;
             this.fuelBearing = fuelBearing;
+            this.aheadKind = aheadKind;
+            this.aheadName = aheadName;
+            this.aheadMeters = aheadMeters;
         }
     }
 
@@ -337,12 +349,12 @@ final class OfflineRoadMap {
     }
 
     /** Looks up the road under a fix off the main thread; the callback gets null when there is nothing to say. */
-    void lookup(double latitude, double longitude, Consumer<RoadInfo> done) {
+    void lookup(double latitude, double longitude, double course, double speedMph, Consumer<RoadInfo> done) {
         if (region == null || failed || closed) return;
         worker.execute(() -> {
             RoadInfo info = null;
             try {
-                info = readInfo(latitude, longitude);
+                info = readInfo(latitude, longitude, course, speedMph);
             } catch (RuntimeException error) {
                 Log.w(TAG, "Could not look up the road", error);
             }
@@ -357,7 +369,7 @@ final class OfflineRoadMap {
     private static final int FUEL_RADIUS = 14;   // tiles, roughly 25 km
     private static final double PLACE_MAX_METERS = 9000;
 
-    private RoadInfo readInfo(double latitude, double longitude) {
+    private RoadInfo readInfo(double latitude, double longitude, double course, double speedMph) {
         double fx = tileX(longitude);
         double fy = tileY(latitude);
         int tx = (int) Math.floor(fx);
@@ -438,8 +450,35 @@ final class OfflineRoadMap {
                 }
             }
         }
+        // The nearest eligible point in each priority group; the first group with anything wins.
+        int[] groupKind = new int[3];
+        String[] groupName = new String[3];
+        double[] groupBest = {Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY};
+        if (!Double.isNaN(course) && speedMph >= 8) {
+            String[] near = {String.valueOf(tx - 2), String.valueOf(tx + 2), String.valueOf(ty - 2),
+                    String.valueOf(ty + 2)};
+            try (Cursor cursor = database.rawQuery("SELECT kind, name, x, y FROM pois WHERE kind BETWEEN 2 AND 8 "
+                    + "AND tx BETWEEN ? AND ? AND ty BETWEEN ? AND ?", near)) {
+                while (cursor.moveToNext()) {
+                    double dx = cursor.getDouble(2) - fx;
+                    double dy = cursor.getDouble(3) - fy;
+                    double distance = Math.sqrt(dx * dx + dy * dy) * meters;
+                    int kind = cursor.getInt(0);
+                    int group = RoadLookup.aheadGroup(kind);
+                    if (distance < groupBest[group] && RoadLookup.aheadEligible(kind, cursor.getString(1), distance,
+                            RoadLookup.bearingDegrees(dx, dy), course, speedMph)) {
+                        groupBest[group] = distance;
+                        groupKind[group] = kind;
+                        groupName[group] = cursor.getString(1);
+                    }
+                }
+            }
+        }
+        int chosen = groupKind[0] != 0 ? 0 : groupKind[1] != 0 ? 1 : groupKind[2] != 0 ? 2 : -1;
         return new RoadInfo(road, limit, place, fuel,
-                fuel == null ? Double.NaN : RoadLookup.metersToMiles(fuelBest), bearing);
+                fuel == null ? Double.NaN : RoadLookup.metersToMiles(fuelBest), bearing,
+                chosen < 0 ? 0 : groupKind[chosen], chosen < 0 ? null : groupName[chosen],
+                chosen < 0 ? Double.NaN : groupBest[chosen]);
     }
 
     private static float readOffset(ByteBuffer geometry, boolean compactGeometry) {

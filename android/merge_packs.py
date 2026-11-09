@@ -9,7 +9,7 @@ from pack_detail import EXTRA_SCHEMA
 from pack_pbf_roads import SCHEMA, geographic_bounds
 from pack_roads import ZOOM
 
-DETAIL = "streets,rail,water,limits,places,fuel"
+DETAIL = "streets,rail,water,limits,places,fuel,ahead"
 
 
 def merge(database, source):
