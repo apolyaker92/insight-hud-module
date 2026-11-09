@@ -1218,9 +1218,17 @@ public final class HudActivity extends Activity {
                 showTripHistory();
                 break;
             case 4:
-                mapPreview = !mapPreview;
-                mapPreviewStartedAt = SystemClock.uptimeMillis();
-                preferences.edit().putBoolean("mapPreview", mapPreview).apply();
+                // View cycles full map, then the split map beside speed, then speed beside the gauges.
+                if (mapPreview && fullMap) {
+                    fullMap = false;
+                } else if (mapPreview) {
+                    mapPreview = false;
+                } else {
+                    mapPreview = true;
+                    fullMap = true;
+                    mapPreviewStartedAt = SystemClock.uptimeMillis();
+                }
+                preferences.edit().putBoolean("mapPreview", mapPreview).putBoolean("fullMap", fullMap).apply();
                 updateMap();
                 break;
             case 5:
@@ -2027,7 +2035,7 @@ public final class HudActivity extends Activity {
 
         private void drawControls(Canvas canvas) {
             String[] labels = {mirror ? "MIRROR  ON" : "MIRROR  OFF", demo ? "DEMO  ON" : "DEMO  OFF",
-                    "BRIGHT  " + BRIGHTNESS_NAMES[brightnessMode], "TRIP LOG", mapPreview ? "SHOW GAUGES" : "SHOW MAP"};
+                    "BRIGHT  " + BRIGHTNESS_NAMES[brightnessMode], "TRIP LOG", !mapPreview ? "FULL MAP" : fullMap ? "SPLIT MAP" : "SHOW GAUGES"};
             for (int index = 0; index < labels.length; index++) {
                 float x = CONTROL_LEFT + index * CONTROL_STEP;
                 paint.setStyle(Paint.Style.STROKE);
