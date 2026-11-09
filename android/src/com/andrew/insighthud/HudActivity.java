@@ -13,6 +13,7 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
+import android.graphics.DashPathEffect;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
@@ -1298,6 +1299,8 @@ public final class HudActivity extends Activity {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
         private final Matrix mapTransform = new Matrix();
+        private float dashScale;
+        private DashPathEffect waterDash, railDash;
         private final float[] mapPoint = new float[2];
         private float cameraAngle;
         private float cameraLead;
@@ -1803,6 +1806,18 @@ public final class HudActivity extends Activity {
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setColor(LINE);
             float strokeScale = MAP_TILE_PIXELS * rangeZoom * (1 + cameraLead * 0.23f);
+            // Water (long dashes) and rail (dots) sit under the roads, only where the local pack has them.
+            if (dashScale != strokeScale) {
+                dashScale = strokeScale;
+                waterDash = new DashPathEffect(new float[]{11 / strokeScale, 6 / strokeScale}, 0);
+                railDash = new DashPathEffect(new float[]{2 / strokeScale, 6 / strokeScale}, 0);
+            }
+            paint.setStrokeWidth(1.5f / strokeScale);
+            paint.setPathEffect(waterDash);
+            canvas.drawPath(scene.roads[4], paint);
+            paint.setPathEffect(railDash);
+            canvas.drawPath(scene.roads[3], paint);
+            paint.setPathEffect(null);
             paint.setStrokeWidth(1.2f / strokeScale);
             canvas.drawPath(scene.roads[0], paint);
             paint.setColor(MUTED);

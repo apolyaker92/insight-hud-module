@@ -28,6 +28,9 @@ final class OfflineRoadMap {
     private static final int WORLD = 1 << ZOOM;
     private static final int TILE_RADIUS = 2;
     private static final String EXTERNAL_PACK = "hud-roads.db";
+    /** A detailed pack for home turf; used inside its bounds, the wide pack elsewhere. */
+    private static final String LOCAL_PACK = "hud-local.db";
+    static final int KINDS = 5; // local, arterial, highway, rail, water
 
     static final class Region {
         final String name;
@@ -78,7 +81,7 @@ final class OfflineRoadMap {
 
     static final class Scene {
         final int x, y;
-        final Path[] roads = {new Path(), new Path(), new Path()};
+        final Path[] roads = {new Path(), new Path(), new Path(), new Path(), new Path()};
         final List<Label> labels = new ArrayList<>();
 
         Scene(int x, int y) {
@@ -95,12 +98,33 @@ final class OfflineRoadMap {
         }
     }
 
+    /** One opened road database with the tile range it covers. */
+    private static final class Pack {
+        final SQLiteDatabase database;
+        final Region region;
+        final boolean compact;
+        final int minX, maxX, minY, maxY;
+
+        Pack(SQLiteDatabase database, Region region) {
+            this.database = database;
+            this.region = region;
+            this.compact = region.compactGeometry;
+            minX = (int) Math.floor(tileX(region.west));
+            maxX = (int) Math.floor(tileX(region.east));
+            minY = (int) Math.floor(tileY(region.north));
+            maxY = (int) Math.floor(tileY(region.south));
+        }
+
+        boolean covers(int x, int y, int radius) {
+            return x - radius >= minX && x + radius <= maxX && y - radius >= minY && y + radius <= maxY;
+        }
+    }
+
     private final Context context;
     private final Runnable changed;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    private SQLiteDatabase database; // Owned by the worker.
-    private boolean compactGeometry;
+    private Pack wide, local; // Owned by the worker.
     private boolean opening, closed, failed, sceneFailed;
     private static final long RETRY_MS = 5000;
     private int requestedX = -1, requestedY = -1;
@@ -131,7 +155,6 @@ final class OfflineRoadMap {
         worker.execute(() -> {
             try {
                 Region loaded = openRegion();
-                compactGeometry = loaded.compactGeometry;
                 main.post(() -> {
                     if (closed) return;
                     region = loaded;
@@ -188,19 +211,29 @@ final class OfflineRoadMap {
     private Region openRegion() throws IOException {
         File external = context.getExternalFilesDir(null);
         if (external != null) {
+            File detailed = new File(external, LOCAL_PACK);
+            if (detailed.isFile()) {
+                try {
+                    local = readPack(detailed);
+                } catch (RuntimeException invalid) {
+                    Log.w(TAG, "Ignoring the local map pack because it could not be opened", invalid);
+                }
+            }
             File pack = new File(external, EXTERNAL_PACK);
             if (pack.isFile()) {
                 try {
-                    return readRegion(pack);
+                    wide = readPack(pack);
+                    return wide.region;
                 } catch (RuntimeException invalid) {
                     Log.w(TAG, "Using bundled roads because the installed map pack could not be opened", invalid);
                 }
             }
         }
-        return readRegion(bundledPack());
+        wide = readPack(bundledPack());
+        return wide.region;
     }
 
-    private Region readRegion(File file) {
+    private Pack readPack(File file) {
         SQLiteDatabase candidate = SQLiteDatabase.openDatabase(file.getPath(), null, SQLiteDatabase.OPEN_READONLY);
         try {
             Map<String, String> metadata = new HashMap<>();
@@ -213,9 +246,7 @@ final class OfflineRoadMap {
                 roads.getColumnCount();
                 labels.getColumnCount();
             }
-            Region loaded = new Region(metadata);
-            database = candidate;
-            return loaded;
+            return new Pack(candidate, new Region(metadata));
         } catch (RuntimeException error) {
             candidate.close();
             throw error;
@@ -242,6 +273,9 @@ final class OfflineRoadMap {
     }
 
     private Scene readScene(int x, int y) {
+        Pack pack = local != null && local.covers(x, y, TILE_RADIUS) ? local : wide;
+        SQLiteDatabase database = pack.database;
+        boolean compactGeometry = pack.compact;
         Scene result = new Scene(x, y);
         String[] args = {String.valueOf(x - TILE_RADIUS), String.valueOf(x + TILE_RADIUS),
                 String.valueOf(y - TILE_RADIUS), String.valueOf(y + TILE_RADIUS)};
@@ -250,12 +284,14 @@ final class OfflineRoadMap {
             while (cursor.moveToNext()) {
                 int dx = cursor.getInt(0) - x;
                 int dy = cursor.getInt(1) - y;
-                Path path = result.roads[cursor.getInt(2)];
+                int kind = cursor.getInt(2);
+                if (kind < 0 || kind >= KINDS) continue;
+                Path path = result.roads[kind];
                 ByteBuffer geometry = ByteBuffer.wrap(cursor.getBlob(3)).order(ByteOrder.LITTLE_ENDIAN);
                 int segmentBytes = compactGeometry ? 8 : 16;
                 while (geometry.remaining() >= segmentBytes) {
-                    path.moveTo(dx + readOffset(geometry), dy + readOffset(geometry));
-                    path.lineTo(dx + readOffset(geometry), dy + readOffset(geometry));
+                    path.moveTo(dx + readOffset(geometry, compactGeometry), dy + readOffset(geometry, compactGeometry));
+                    path.lineTo(dx + readOffset(geometry, compactGeometry), dy + readOffset(geometry, compactGeometry));
                 }
             }
         }
@@ -270,14 +306,15 @@ final class OfflineRoadMap {
         return result;
     }
 
-    private float readOffset(ByteBuffer geometry) {
+    private static float readOffset(ByteBuffer geometry, boolean compactGeometry) {
         return compactGeometry ? (geometry.getShort() & 0xffff) / 65535f : geometry.getFloat();
     }
 
     void close() {
         closed = true;
         worker.execute(() -> {
-            if (database != null) database.close();
+            if (wide != null) wide.database.close();
+            if (local != null) local.database.close();
         });
         worker.shutdown();
     }
