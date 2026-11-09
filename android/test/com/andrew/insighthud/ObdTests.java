@@ -240,6 +240,17 @@ public final class ObdTests {
         check("miles", Math.abs(RoadLookup.metersToMiles(1609.344) - 1) < 1e-9);
         check("bearing east is 90", Math.abs(RoadLookup.bearingDegrees(1, 0) - 90) < 1e-9);
         check("bearing north-west is 315", Math.abs(RoadLookup.bearingDegrees(-1, -1) - 315) < 1e-9);
+        check("signals, stops, crossings and curves must sit on the road, cameras may be beside it",
+                RoadLookup.onRoadMeters(RoadLookup.STOP) > 0 && RoadLookup.onRoadMeters(RoadLookup.STOP) < 10
+                        && RoadLookup.onRoadMeters(RoadLookup.CAMERA) > RoadLookup.onRoadMeters(RoadLookup.STOP)
+                        && RoadLookup.onRoadMeters(RoadLookup.EXIT) == 0);
+        Alerts quiet = new Alerts();
+        quiet.raise("OVER LIMIT 35", Alerts.INFO, 1000, true);
+        Alerts.Alert silentOne = quiet.tick(1000, false);
+        check("a silent alert still shows but is flagged silent", silentOne != null && silentOne.silent);
+        Alerts loud = new Alerts();
+        loud.raise("OBD LINKED", Alerts.INFO, 1000);
+        check("an ordinary alert is not silent", !loud.tick(1000, false).silent);
         check("negative bearings wrap", Math.abs(RoadLookup.normalizeBearing(-150) - 210) < 1e-9
                 && Math.abs(RoadLookup.normalizeBearing(370) - 10) < 1e-9);
         check("hazards outrank signals outrank exits", RoadLookup.aheadGroup(RoadLookup.CROSSING) == 0

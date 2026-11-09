@@ -91,6 +91,20 @@ final class RoadLookup {
         }
     }
 
+    /**
+     * How close, in metres, a point has to be to the road being driven to count as on it, or 0 for kinds that are
+     * not checked. Stop signs on a side street and signals or crossings on a parallel road sit a few metres off the
+     * road, so the tolerance is tight; a camera is mounted beside the road, so it gets more room.
+     */
+    static double onRoadMeters(int kind) {
+        switch (kind) {
+            case SIGNAL: case STOP: case CROSSING: return 7;
+            case CURVE: return 6;
+            case CAMERA: return 35;
+            default: return 0;
+        }
+    }
+
     /** Half-width, in degrees, of the cone ahead that a kind of point has to sit in to count as on the road. */
     static double aheadCone(int kind) {
         switch (kind) {

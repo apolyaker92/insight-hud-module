@@ -390,9 +390,12 @@ final class OfflineRoadMap {
         double best = Double.POSITIVE_INFINITY;
         String[] around = {String.valueOf(tx - 1), String.valueOf(tx + 1), String.valueOf(ty - 1),
                 String.valueOf(ty + 1)};
+        List<Object[]> nearbyWays = new ArrayList<>(); // x, y, name, geometry
         try (Cursor cursor = database.rawQuery("SELECT x, y, name, mph, geometry FROM ways "
                 + "WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?", around)) {
             while (cursor.moveToNext()) {
+                nearbyWays.add(new Object[]{cursor.getInt(0), cursor.getInt(1), cursor.getString(2),
+                        cursor.getBlob(4)});
                 double distance = RoadLookup.nearestSquared(cursor.getBlob(4),
                         fx - cursor.getInt(0), fy - cursor.getInt(1));
                 if (distance < best) {
@@ -402,7 +405,9 @@ final class OfflineRoadMap {
                 }
             }
         }
-        if (Math.sqrt(best) * meters > RoadLookup.ROAD_MATCH_METERS) {
+        String drivenName = road; // the name of the road under the fix, even if empty, for the on-road check
+        boolean onMappedRoad = Math.sqrt(best) * meters <= RoadLookup.ROAD_MATCH_METERS;
+        if (!onMappedRoad) {
             road = null;
             limit = 0;
         } else if (road != null && road.isEmpty()) {
@@ -467,6 +472,13 @@ final class OfflineRoadMap {
                     int group = RoadLookup.aheadGroup(kind);
                     if (distance < groupBest[group] && RoadLookup.aheadEligible(kind, cursor.getString(1), distance,
                             RoadLookup.bearingDegrees(dx, dy), course, speedMph)) {
+                        double tolerance = RoadLookup.onRoadMeters(kind);
+                        if (tolerance > 0) {
+                            // A point beside the road (a stop sign on a side street, a crossing on a parallel road)
+                            // is not on the way ahead; only points on the road being driven count.
+                            if (!onMappedRoad || distanceToRoad(nearbyWays, drivenName,
+                                    cursor.getDouble(2), cursor.getDouble(3)) * meters > tolerance) continue;
+                        }
                         groupBest[group] = distance;
                         groupKind[group] = kind;
                         groupName[group] = cursor.getString(1);
@@ -479,6 +491,17 @@ final class OfflineRoadMap {
                 fuel == null ? Double.NaN : RoadLookup.metersToMiles(fuelBest), bearing,
                 chosen < 0 ? 0 : groupKind[chosen], chosen < 0 ? null : groupName[chosen],
                 chosen < 0 ? Double.NaN : groupBest[chosen]);
+    }
+
+    /** Distance, in tile units, from a point to the nearest piece of the named road in the nearby ways. */
+    private static double distanceToRoad(List<Object[]> ways, String name, double px, double py) {
+        double best = Double.POSITIVE_INFINITY;
+        for (Object[] way : ways) {
+            if (!java.util.Objects.equals(way[2], name)) continue;
+            best = Math.min(best, RoadLookup.nearestSquared((byte[]) way[3], px - (Integer) way[0],
+                    py - (Integer) way[1]));
+        }
+        return Math.sqrt(best);
     }
 
     private static float readOffset(ByteBuffer geometry, boolean compactGeometry) {

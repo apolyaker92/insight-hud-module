@@ -417,8 +417,12 @@ public final class HudActivity extends Activity {
     }
 
     private void raiseAlert(String text, int level) {
+        raiseAlert(text, level, false);
+    }
+
+    private void raiseAlert(String text, int level, boolean silent) {
         if (hud == null || parkedBlank || thermalBlank) return;
-        if (alerts.raise(text, level, SystemClock.uptimeMillis())) hud.invalidate();
+        if (alerts.raise(text, level, SystemClock.uptimeMillis(), silent)) hud.invalidate();
     }
 
     private boolean ambientDark() {
@@ -972,6 +976,10 @@ public final class HudActivity extends Activity {
         Double speed = currentSpeedMph();
         roadMap.lookup(location.getLatitude(), location.getLongitude(),
                 gpsCourse, speed == null ? 0 : speed, info -> {
+            if (info != null && (roadInfo == null || roadInfo.aheadKind != info.aheadKind)) {
+                Log.i("HudAhead", info.aheadKind == 0 ? "ahead: nothing" : "ahead: " + aheadLine(info) + " on "
+                        + info.road);
+            }
             roadInfo = info;
             checkOverLimit();
             announceAhead(info);
@@ -1027,7 +1035,7 @@ public final class HudActivity extends Activity {
         if (overSince == 0) overSince = now;
         if (now - overSince >= 4000 && now - lastOverAlertAt >= 90_000) {
             lastOverAlertAt = now;
-            raiseAlert("OVER LIMIT " + info.limitMph, Alerts.INFO);
+            raiseAlert("OVER LIMIT " + info.limitMph, Alerts.INFO, true); // a banner only, no tone
         }
     }
 
@@ -1526,7 +1534,7 @@ public final class HudActivity extends Activity {
             boolean alertHeld = thermalHold || shuttingDown || starting || startupPending;
             Alerts.Alert alert = alerts.tick(now, alertHeld);
             if (alert != null) {
-                if (alerts.justStarted()) playAlertSound(alert.level);
+                if (alerts.justStarted() && !alert.silent) playAlertSound(alert.level);
                 drawAlert(canvas, alert, now);
             }
             canvas.restore();

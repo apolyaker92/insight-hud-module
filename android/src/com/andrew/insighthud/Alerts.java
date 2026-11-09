@@ -22,12 +22,14 @@ final class Alerts {
     static final class Alert {
         final String text;
         final int level;
+        final boolean silent;
         final long raisedAt;
         long shownAt; // 0 until it first appears
 
-        Alert(String text, int level, long raisedAt) {
+        Alert(String text, int level, long raisedAt, boolean silent) {
             this.text = text;
             this.level = level;
+            this.silent = silent;
             this.raisedAt = raisedAt;
         }
     }
@@ -40,10 +42,15 @@ final class Alerts {
 
     /** Returns false when the same text was raised recently and is being ignored. */
     boolean raise(String text, int level, long now) {
+        return raise(text, level, now, false);
+    }
+
+    /** A silent alert shows its banner but makes no sound. */
+    boolean raise(String text, int level, long now, boolean silent) {
         Long last = lastRaised.get(text);
         if (last != null && now - last < REPEAT_BLOCK_MS) return false;
         lastRaised.put(text, now);
-        Alert alert = new Alert(text, level, now);
+        Alert alert = new Alert(text, level, now, silent);
         if (current != null && level > current.level) current = null; // a worse problem cuts in
         waiting.add(alert);
         return true;
