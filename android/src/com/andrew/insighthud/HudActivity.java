@@ -115,15 +115,6 @@ public final class HudActivity extends Activity {
 
         @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
     };
-    private int buttonsMode; // 0 auto (hide with a keypad), 1 always show, 2 always hide
-    private boolean keypadPresent;
-    private InputManager inputManager;
-    private final InputManager.InputDeviceListener inputListener = new InputManager.InputDeviceListener() {
-        @Override public void onInputDeviceAdded(int id) { updateKeypad(); }
-        @Override public void onInputDeviceRemoved(int id) { updateKeypad(); }
-        @Override public void onInputDeviceChanged(int id) { updateKeypad(); }
-    };
-    private static final String[] BUTTON_MODE_NAMES = {"AUTO", "ALWAYS SHOW", "ALWAYS HIDE"};
     private boolean powered;
     private boolean powerKnown;
     private boolean accessoryActive;
@@ -299,7 +290,6 @@ public final class HudActivity extends Activity {
                 : preferences.getBoolean("dim", false) ? 3 : 0; // The old NIGHT toggle becomes LOW.
         sensors = getSystemService(SensorManager.class);
         lightSensor = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_LIGHT);
-        buttonsMode = Math.max(0, Math.min(2, preferences.getInt("buttonsMode", 0)));
         sounds.mode = Math.max(0, Math.min(SoundPolicy.MODE_NAMES.length - 1, preferences.getInt("soundMode", 0)));
         sounds.level = Math.max(0, Math.min(SoundPolicy.LEVELS.length - 1,
                 preferences.getInt("soundLevel", SoundPolicy.LEVELS.length - 1)));
@@ -315,9 +305,6 @@ public final class HudActivity extends Activity {
         getWindow().setStatusBarColor(Color.BLACK);
         hud = new HudView(this);
         setContentView(hud);
-        inputManager = getSystemService(InputManager.class);
-        if (inputManager != null) inputManager.registerInputDeviceListener(inputListener, main);
-        updateKeypad();
         locationManager = getSystemService(LocationManager.class);
         roadMap = new OfflineRoadMap(this, () -> {
             refreshMapTiles();
@@ -373,7 +360,6 @@ public final class HudActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 29 && thermalListener != null) {
             getSystemService(PowerManager.class).removeThermalStatusListener(thermalListener);
         }
-        if (inputManager != null) inputManager.unregisterInputDeviceListener(inputListener);
         if (lightRegistered) sensors.unregisterListener(lightListener);
         if (obd != null) obd.destroy();
         switchSounds.release();
@@ -871,33 +857,9 @@ public final class HudActivity extends Activity {
         return gpsFix != null && region.contains(gpsFix.getLatitude(), gpsFix.getLongitude());
     }
 
-    /** A keypad that provides F1-F4 replaces the on-screen buttons. */
-    private void updateKeypad() {
-        boolean found = false;
-        for (int id : InputDevice.getDeviceIds()) {
-            InputDevice device = InputDevice.getDevice(id);
-            if (device == null || device.isVirtual()
-                    || (device.getSources() & InputDevice.SOURCE_KEYBOARD) != InputDevice.SOURCE_KEYBOARD) continue;
-            boolean[] keys = device.hasKeys(KeyEvent.KEYCODE_F1, KeyEvent.KEYCODE_F2,
-                    KeyEvent.KEYCODE_F3, KeyEvent.KEYCODE_F4);
-            if (keys[0] && keys[1] && keys[2] && keys[3]) {
-                found = true;
-                break;
-            }
-        }
-        if (found != keypadPresent) {
-            keypadPresent = found;
-            if (hud != null) hud.invalidate();
-        }
-    }
-
     /** The map takes the whole panel, with speed and rpm laid over its corner. */
     private boolean fullMapActive() {
         return fullMap && mapPreview && thermalLevel == THERMAL_NORMAL;
-    }
-
-    private boolean controlsHidden() {
-        return buttonsMode == 2 || (buttonsMode == 0 && keypadPresent);
     }
 
     private static final Pattern PROBE_REQUEST = Pattern.compile("(01|02|09|21|22)[0-9A-F]{2,6}");
@@ -1055,84 +1017,61 @@ public final class HudActivity extends Activity {
         rpmCount = Math.min(rpmCount + 1, rpmHistory.length);
     }
 
+    /** Settings: the everyday options first, then sound, then the adapter and system items. */
     private void showLinkMenu() {
         if (!hasBluetoothPermission()) {
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT}, 23);
             return;
         }
+        List<String> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        labels.add("View: " + (!mapPreview ? "GAUGES" : fullMap ? "FULL MAP" : "SPLIT MAP"));
+        actions.add(() -> activateControl(4));
+        labels.add("Brightness: " + BRIGHTNESS_NAMES[brightnessMode]);
+        actions.add(() -> activateControl(2));
+        labels.add("Mirror: " + (mirror ? "ON" : "OFF"));
+        actions.add(() -> activateControl(0));
+        labels.add("Road info (limit, road, fuel): " + (roadInfoOn ? "ON" : "OFF"));
+        actions.add(() -> {
+            roadInfoOn = !roadInfoOn;
+            preferences.edit().putBoolean("roadInfo", roadInfoOn).apply();
+            roadInfo = null;
+            lastLookupAt = 0;
+            updateMap();
+            hud.invalidate();
+        });
+        labels.add("Sound: " + SoundPolicy.MODE_NAMES[sounds.mode]);
+        actions.add(this::cycleSoundMode);
+        labels.add("Volume: " + Math.round(SoundPolicy.LEVELS[sounds.level] * 100) + "%");
+        actions.add(this::cycleVolume);
+        labels.add("Night quiet: " + (sounds.nightQuiet ? "ON" : "OFF"));
+        actions.add(this::toggleNightQuiet);
+        labels.add("Trip log");
+        actions.add(this::showTripHistory);
+        labels.add("Demo: " + (demo ? "ON" : "OFF"));
+        actions.add(() -> activateControl(1));
+        labels.add("Flip screen 180: " + (preferences.getBoolean("flipScreen", true) ? "ON" : "OFF"));
+        actions.add(() -> {
+            preferences.edit().putBoolean("flipScreen", !preferences.getBoolean("flipScreen", true)).apply();
+            applyOrientation();
+        });
+        labels.add("Bluetooth off when parked: " + (preferences.getBoolean("btParkOff", true) ? "ON" : "OFF"));
+        actions.add(() -> preferences.edit().putBoolean("btParkOff", !preferences.getBoolean("btParkOff", true)).apply());
+        labels.add("Choose paired OBD adapter");
+        actions.add(this::chooseAdapter);
+        labels.add("Pair device / enable Bluetooth");
+        actions.add(() -> startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)));
+        labels.add("Forget saved adapter");
+        actions.add(() -> {
+            preferences.edit().remove("adapterAddress").remove("adapterName").apply();
+            connectSavedAdapter();
+        });
+        labels.add("Android settings");
+        actions.add(() -> startActivity(new Intent(Settings.ACTION_SETTINGS)));
         new AlertDialog.Builder(this)
-                .setTitle("OBD LINK / " + linkStatus)
-                .setItems(new String[]{"Choose paired OBD adapter", "Pair device / enable Bluetooth",
-                        "Forget saved adapter", "Android settings",
-                        "Bottom buttons: " + BUTTON_MODE_NAMES[buttonsMode], "Toggle mirror", "Toggle demo", "Trip log",
-                        "Brightness: " + BRIGHTNESS_NAMES[brightnessMode],
-                        "Sound: " + SoundPolicy.MODE_NAMES[sounds.mode],
-                        "Volume: " + Math.round(SoundPolicy.LEVELS[sounds.level] * 100) + "%",
-                        "Night quiet: " + (sounds.nightQuiet ? "ON" : "OFF"),
-                        "Bluetooth off when parked: " + (preferences.getBoolean("btParkOff", true) ? "ON" : "OFF"),
-                        "Flip screen 180: " + (preferences.getBoolean("flipScreen", true) ? "ON" : "OFF"),
-                        "Full screen map: " + (fullMap ? "ON" : "OFF"),
-                        "Road info (limit, road, fuel): " + (roadInfoOn ? "ON" : "OFF")}, (dialog, choice) -> {
-                    switch (choice) {
-                        case 0:
-                            chooseAdapter();
-                            break;
-                        case 1:
-                            startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
-                            break;
-                        case 2:
-                            preferences.edit().remove("adapterAddress").remove("adapterName").apply();
-                            connectSavedAdapter();
-                            break;
-                        case 3:
-                            startActivity(new Intent(Settings.ACTION_SETTINGS));
-                            break;
-                        case 4:
-                            buttonsMode = (buttonsMode + 1) % BUTTON_MODE_NAMES.length;
-                            preferences.edit().putInt("buttonsMode", buttonsMode).apply();
-                            hud.invalidate();
-                            break;
-                        case 5:
-                            activateControl(0);
-                            break;
-                        case 6:
-                            activateControl(1);
-                            break;
-                        case 7:
-                            showTripHistory();
-                            break;
-                        case 8:
-                            activateControl(2);
-                            break;
-                        case 9:
-                            cycleSoundMode();
-                            break;
-                        case 10:
-                            cycleVolume();
-                            break;
-                        case 11:
-                            toggleNightQuiet();
-                            break;
-                        case 12:
-                            preferences.edit().putBoolean("btParkOff", !preferences.getBoolean("btParkOff", true)).apply();
-                            break;
-                        case 13:
-                            preferences.edit().putBoolean("flipScreen", !preferences.getBoolean("flipScreen", true)).apply();
-                            applyOrientation();
-                            break;
-                        case 14:
-                            activateControl(9);
-                            break;
-                        case 15:
-                            roadInfoOn = !roadInfoOn;
-                            preferences.edit().putBoolean("roadInfo", roadInfoOn).apply();
-                            roadInfo = null;
-                            lastLookupAt = 0;
-                            updateMap();
-                            hud.invalidate();
-                            break;
-                    }
-                }).setNegativeButton("CLOSE", null).show();
+                .setTitle("SETTINGS / " + linkStatus)
+                .setItems(labels.toArray(new String[0]), (dialog, choice) -> actions.get(choice).run())
+                .setNegativeButton("CLOSE", null).show();
     }
 
     private void selectAdapter(String address, String name) {
@@ -1353,10 +1292,6 @@ public final class HudActivity extends Activity {
         private static final int MUTED = 0xFFB1874B;
         private static final int LINE = 0xFF61451F;
         private static final int UNLIT = 0xFF1D160A;
-        private static final int CONTROL_LEFT = 48;
-        private static final int CONTROL_STEP = 240;
-        private static final int CONTROL_WIDTH = 224;
-        private static final int CONTROL_COUNT = 5;
         private static final float MAP_LEFT_SPLIT = 650;
         private static final float MAP_LEFT_FULL = 65;
         private float mapLeft() { return fullMapActive() ? MAP_LEFT_FULL : MAP_LEFT_SPLIT; }
@@ -1425,15 +1360,15 @@ public final class HudActivity extends Activity {
         private int pressedControl = -1;
         private final int[] digitSegments = {63, 6, 91, 79, 102, 109, 125, 7, 127, 111};
 
-        /** Rows freed when the on-screen buttons are hidden; the frame grows by this much. */
-        private float extra() { return controlsHidden() ? 60 : 0; }
+        /** Rows the layout gains from having no on-screen button row; the frame is this much taller. */
+        private float extra() { return 60; }
 
         HudView(Context context) {
             super(context);
             // The PH-1's legacy GPU driver drops cached text on state changes.
             // Rasterize this static instrument only when its data changes.
             setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-            setContentDescription("Insight HUD Module 2.3. Speed, coolant, and RPM history on the left. Gauges or an offline road map on the right. Bluetooth setup is in the header. Bottom controls include the trip log.");
+            setContentDescription("Insight HUD Module 2.3. Speed, coolant, and RPM history on the left. Gauges or an offline road map on the right. Bluetooth setup, with the trip log and the other settings, is in the header. Tap the map for full screen, and the rest of the screen to change the view.");
             setFocusable(true);
         }
 
@@ -1468,7 +1403,6 @@ public final class HudActivity extends Activity {
                 drawAlert(canvas, alert, now);
             }
             canvas.restore();
-            if (!starting && !shuttingDown && !thermalHold && extra() == 0) drawControls(canvas);
             canvas.restore();
             if (alerts.busy() && isShown()) postInvalidateDelayed(60);
             if ((thermalHold || starting || shuttingDown
@@ -2172,22 +2106,6 @@ public final class HudActivity extends Activity {
             paint.setStyle(Paint.Style.FILL);
         }
 
-        private void drawControls(Canvas canvas) {
-            String[] labels = {mirror ? "MIRROR  ON" : "MIRROR  OFF", demo ? "DEMO  ON" : "DEMO  OFF",
-                    "BRIGHT  " + BRIGHTNESS_NAMES[brightnessMode], "TRIP LOG", !mapPreview ? "FULL MAP" : fullMap ? "SPLIT MAP" : "SHOW GAUGES"};
-            for (int index = 0; index < labels.length; index++) {
-                float x = CONTROL_LEFT + index * CONTROL_STEP;
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(1.5f);
-                paint.setColor(pressedControl == index ? AMBER : LINE);
-                rectangle.set(x, 570, x + CONTROL_WIDTH, 620);
-                canvas.drawRect(rectangle, paint);
-                paint.setStyle(Paint.Style.FILL);
-                text(canvas, labels[index], x + CONTROL_WIDTH / 2f, 601, 15,
-                        index == 1 && demo ? AMBER : MUTED, false, Paint.Align.CENTER);
-            }
-        }
-
         private void digit(Canvas canvas, char character, float x, float y, float width, int color) {
             int mask = character == '-' ? 64 : digitSegments[character - '0'];
             float height = width * 1.88f;
@@ -2259,10 +2177,9 @@ public final class HudActivity extends Activity {
                     && (!hasPreciseLocation() || !gpsEnabled() || (!powered && !accessoryActive))) return 5;
             if (thermalLevel == THERMAL_NORMAL && mapPreview && mapX >= mapLeft() && mapX <= MAP_RIGHT
                     && y >= mapTop() && y <= (fullMapActive() ? 520 : 480) + extra()) return 9;
-            if (extra() > 0 || y < 570 || y > 620 || x < CONTROL_LEFT) return -1;
-            int index = (int) ((x - CONTROL_LEFT) / CONTROL_STEP);
-            if (index >= CONTROL_COUNT || x > CONTROL_LEFT + index * CONTROL_STEP + CONTROL_WIDTH) return -1;
-            return index;
+            // The rest of the frame, under the header and above the footer, steps through the views.
+            if (mapX >= 40 && mapX <= 1240 && y >= 88 && y <= 480 + extra()) return 4;
+            return -1;
         }
 
         @Override public boolean onTouchEvent(MotionEvent event) {
