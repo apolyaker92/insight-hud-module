@@ -46,6 +46,8 @@ import android.util.Log;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
+import android.view.DisplayCutout;
+import android.view.WindowInsets;
 import android.view.View;
 import android.view.WindowManager;
 import java.util.ArrayList;
@@ -1360,8 +1362,14 @@ public final class HudActivity extends Activity {
         private int pressedControl = -1;
         private final int[] digitSegments = {63, 6, 91, 79, 102, 109, 125, 7, 127, 111};
 
-        /** Rows the layout gains from having no on-screen button row; the frame is this much taller. */
-        private float extra() { return 60; }
+        /** Extra rows below the standard frame, set each draw so the frame fills the screen's height. */
+        private float extraRows = 60;
+        private float extra() { return extraRows; }
+
+        /** Gap kept between the frame and the screen edge, in pixels. */
+        private static final float EDGE_PIXELS = 12;
+        private static final float FRAME_LEFT = 40, FRAME_TOP = 34, FRAME_WIDTH = 1200, FRAME_BASE_HEIGHT = 518;
+        private static final float MAX_EXTRA = 110;
 
         HudView(Context context) {
             super(context);
@@ -1372,6 +1380,29 @@ public final class HudActivity extends Activity {
             setFocusable(true);
         }
 
+        /**
+         * Scales the frame to fill the screen with a thin margin, staying clear of the camera notch, and stretches
+         * it taller to use whatever height the width leaves over.
+         */
+        private void fitFrame() {
+            float insetLeft = 0, insetTop = 0, insetRight = 0, insetBottom = 0;
+            WindowInsets insets = getRootWindowInsets();
+            DisplayCutout cutout = insets == null ? null : insets.getDisplayCutout();
+            if (cutout != null) {
+                insetLeft = cutout.getSafeInsetLeft();
+                insetTop = cutout.getSafeInsetTop();
+                insetRight = cutout.getSafeInsetRight();
+                insetBottom = cutout.getSafeInsetBottom();
+            }
+            float availWidth = Math.max(1, getWidth() - insetLeft - insetRight - 2 * EDGE_PIXELS);
+            float availHeight = Math.max(1, getHeight() - insetTop - insetBottom - 2 * EDGE_PIXELS);
+            scale = Math.min(availWidth / FRAME_WIDTH, availHeight / FRAME_BASE_HEIGHT);
+            extraRows = Math.max(0, Math.min(MAX_EXTRA, availHeight / scale - FRAME_BASE_HEIGHT));
+            float frameHeight = (FRAME_BASE_HEIGHT + extraRows) * scale;
+            left = insetLeft + EDGE_PIXELS + (availWidth - FRAME_WIDTH * scale) / 2 - FRAME_LEFT * scale;
+            top = insetTop + EDGE_PIXELS + (availHeight - frameHeight) / 2 - FRAME_TOP * scale;
+        }
+
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             if (parkedBlank || thermalBlank) {
@@ -1379,9 +1410,7 @@ public final class HudActivity extends Activity {
                 return;
             }
             canvas.drawColor(0xFF080602);
-            scale = Math.min(getWidth() / 1280f, getHeight() / 640f);
-            left = (getWidth() - 1280 * scale) / 2;
-            top = (getHeight() - 640 * scale) / 2;
+            fitFrame();
             canvas.save();
             canvas.translate(left, top);
             canvas.scale(scale, scale);
