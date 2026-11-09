@@ -1094,6 +1094,12 @@ public final class HudActivity extends Activity {
         actions.add(() -> activateControl(4));
         labels.add("Brightness: " + BRIGHTNESS_NAMES[brightnessMode]);
         actions.add(() -> activateControl(2));
+        labels.add("Colors: " + (preferences.getInt("palette", 0) == 0 ? "GREEN" : "AMBER"));
+        actions.add(() -> {
+            preferences.edit().putInt("palette", preferences.getInt("palette", 0) == 0 ? 1 : 0).apply();
+            hud.applyPalette();
+            hud.invalidate();
+        });
         labels.add("Mirror: " + (mirror ? "ON" : "OFF"));
         actions.add(() -> activateControl(0));
         labels.add("Road info (limit, road, fuel): " + (roadInfoOn ? "ON" : "OFF"));
@@ -1353,10 +1359,30 @@ public final class HudActivity extends Activity {
     }
 
     private final class HudView extends View {
-        private static final int AMBER = 0xFFFFB64F;
-        private static final int MUTED = 0xFFB1874B;
-        private static final int LINE = 0xFF61451F;
-        private static final int UNLIT = 0xFF1D160A;
+        // The palette, set by applyPalette(): the lit instrument colour, a dimmer text colour, rules and frames,
+        // unlit segments, and the dark ground everything is drawn on.
+        private int ACCENT, MUTED, LINE, UNLIT, BACKGROUND;
+
+        /** The ground colour at a given opacity (0 to 255). */
+        private int ground(int alpha) {
+            return (alpha << 24) | (BACKGROUND & 0xFFFFFF);
+        }
+
+        void applyPalette() {
+            if (preferences.getInt("palette", 0) == 0) { // green phosphor
+                ACCENT = 0xFF4DFF88;
+                MUTED = 0xFF3FB468;
+                LINE = 0xFF1D5C36;
+                UNLIT = 0xFF0A1D11;
+                BACKGROUND = 0xFF020A05;
+            } else { // amber
+                ACCENT = 0xFFFFB64F;
+                MUTED = 0xFFB1874B;
+                LINE = 0xFF61451F;
+                UNLIT = 0xFF1D160A;
+                BACKGROUND = 0xFF080602;
+            }
+        }
         private static final float MAP_LEFT_SPLIT = 650;
         private static final float MAP_LEFT_FULL = 65;
         private float mapLeft() { return fullMapActive() ? MAP_LEFT_FULL : MAP_LEFT_SPLIT; }
@@ -1439,6 +1465,7 @@ public final class HudActivity extends Activity {
             // The PH-1's legacy GPU driver drops cached text on state changes.
             // Rasterize this static instrument only when its data changes.
             setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+            applyPalette();
             setContentDescription("Insight HUD Module 2.3. Speed, coolant, and RPM history on the left. Gauges or an offline road map on the right. Bluetooth setup, with the trip log and the other settings, is in the header. Tap the map for full screen, and the rest of the screen to change the view.");
             setFocusable(true);
         }
@@ -1472,7 +1499,7 @@ public final class HudActivity extends Activity {
                 canvas.drawColor(Color.BLACK);
                 return;
             }
-            canvas.drawColor(0xFF080602);
+            canvas.drawColor(BACKGROUND);
             fitFrame();
             canvas.save();
             canvas.translate(left, top);
@@ -1512,8 +1539,8 @@ public final class HudActivity extends Activity {
             long age = now - alert.shownAt;
             boolean flashing = alert.level > Alerts.INFO;
             boolean inverted = flashing && age / (alert.level == Alerts.CRITICAL ? 220 : 420) % 2 == 0 && age < 4000;
-            int fill = inverted ? AMBER : 0xFF080602;
-            int ink = inverted ? 0xFF080602 : AMBER;
+            int fill = inverted ? ACCENT : BACKGROUND;
+            int ink = inverted ? BACKGROUND : ACCENT;
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(fill);
             canvas.drawRect(41, 35, 1239, 87, paint);
@@ -1526,23 +1553,23 @@ public final class HudActivity extends Activity {
         private void drawThermalWarning(Canvas canvas, long now) {
             border(canvas, 40, 34, 1240, 552 + extra());
             text(canvas, "INSIGHT / HUD MODULE 2.3", 60, 69, 17, MUTED, false);
-            text(canvas, "THERMAL PROTECTION", 1220, 69, 17, AMBER, false, Paint.Align.RIGHT);
+            text(canvas, "THERMAL PROTECTION", 1220, 69, 17, ACCENT, false, Paint.Align.RIGHT);
             line(canvas, 40, 88, 1240, 88, LINE);
             long elapsed = now - thermalStartedAt;
-            int color = elapsed % 1200 < 700 ? 0xFFFF8A45 : AMBER;
+            int color = elapsed % 1200 < 700 ? 0xFFFF8A45 : ACCENT;
             text(canvas, "OVERHEATING", 640, 254, 61, color, true, Paint.Align.CENTER);
             text(canvas, "BATTERY " + Math.round(batteryTemperature) + " °C", 640, 307,
-                    25, AMBER, false, Paint.Align.CENTER);
+                    25, ACCENT, false, Paint.Align.CENTER);
             text(canvas, "GPS AND OBD PAUSED", 640, 358, 18, MUTED, false, Paint.Align.CENTER);
             drawThermalTicker(canvas, 330, 950, 422, elapsed, "COOL PHONE BEFORE USE   /   HUD ENTERING STANDBY");
         }
 
         private void drawThermalLimit(Canvas canvas, long now) {
-            text(canvas, "03  THERMAL LIMIT", mapLeft(), 118, 19, AMBER, false);
+            text(canvas, "03  THERMAL LIMIT", mapLeft(), 118, 19, ACCENT, false);
             border(canvas, mapLeft(), mapTop(), MAP_RIGHT, mapBottom());
-            text(canvas, "PHONE RUNNING HOT", mapCenterX(), 235, 27, AMBER, true, Paint.Align.CENTER);
+            text(canvas, "PHONE RUNNING HOT", mapCenterX(), 235, 27, ACCENT, true, Paint.Align.CENTER);
             text(canvas, "BATTERY " + Math.round(batteryTemperature) + " °C", mapCenterX(), 283,
-                    20, AMBER, false, Paint.Align.CENTER);
+                    20, ACCENT, false, Paint.Align.CENTER);
             drawThermalTicker(canvas, 680, 1190, 351, now - thermalStartedAt, "GPS PAUSED   /   SCREEN DIMMED");
         }
 
@@ -1554,9 +1581,9 @@ public final class HudActivity extends Activity {
             if (elapsed < THERMAL_WARNING_MS) {
                 float width = right - left;
                 float x = left + width * 0.47f - elapsed * 0.094f;
-                text(canvas, message, x, y, 16, AMBER, false);
+                text(canvas, message, x, y, 16, ACCENT, false);
             } else {
-                text(canvas, message, (left + right) / 2, y, 16, AMBER, false, Paint.Align.CENTER);
+                text(canvas, message, (left + right) / 2, y, 16, ACCENT, false, Paint.Align.CENTER);
             }
             canvas.restore();
         }
@@ -1566,11 +1593,11 @@ public final class HudActivity extends Activity {
             text(canvas, "INSIGHT / HUD MODULE 2.3", 60, 69, 17, MUTED, false);
             line(canvas, 40, 88, 1240, 88, LINE);
             if (shutdownReport == null) {
-                text(canvas, "ACCESSORY POWER OFF", 640, 270, 42, AMBER, true, Paint.Align.CENTER);
+                text(canvas, "ACCESSORY POWER OFF", 640, 270, 42, ACCENT, true, Paint.Align.CENTER);
                 text(canvas, "HUD STANDBY", 640, 325, 24, MUTED, false, Paint.Align.CENTER);
             } else {
                 text(canvas, shutdownReport.optLong("ended") == 0 ? "TRIP REPORT / DEMO" : "TRIP REPORT / SAVED",
-                        640, 171, 35, AMBER, true, Paint.Align.CENTER);
+                        640, 171, 35, ACCENT, true, Paint.Align.CENTER);
                 reportMetric(canvas, 210, "ELAPSED", TripStats.time(shutdownReport));
                 reportMetric(canvas, 495, "EST. MILES", TripStats.value(shutdownReport, "miles", "%.1f"));
                 reportMetric(canvas, 785, "PEAK RPM", TripStats.value(shutdownReport, "rpm", "%.0f"));
@@ -1579,7 +1606,7 @@ public final class HudActivity extends Activity {
             }
             int litBlocks = 40 - (int) (elapsed * 40 / shutdownDuration());
             for (int index = 0; index < 40; index++) {
-                paint.setColor(index < litBlocks ? AMBER : UNLIT);
+                paint.setColor(index < litBlocks ? ACCENT : UNLIT);
                 rectangle.set(65 + index * 29, 481, 85 + index * 29, 496);
                 canvas.drawRect(rectangle, paint);
             }
@@ -1587,29 +1614,29 @@ public final class HudActivity extends Activity {
 
         private void reportMetric(Canvas canvas, int x, String name, String value) {
             text(canvas, name, x, 258, 17, MUTED, false, Paint.Align.CENTER);
-            text(canvas, value, x, 320, 35, AMBER, true, Paint.Align.CENTER);
+            text(canvas, value, x, 320, 35, ACCENT, true, Paint.Align.CENTER);
         }
 
         private void drawStartup(Canvas canvas, long elapsed) {
             border(canvas, 40, 34, 1240, 552 + extra());
             text(canvas, "INSIGHT / HUD MODULE 2.3", 60, 69, 17, MUTED, false);
-            text(canvas, "SYSTEM START", 1220, 69, 17, AMBER, false, Paint.Align.RIGHT);
+            text(canvas, "SYSTEM START", 1220, 69, 17, ACCENT, false, Paint.Align.RIGHT);
             line(canvas, 40, 88, 1240, 88, LINE);
 
             if (elapsed < 800) {
                 int letters = Math.min(7, 1 + (int) (elapsed / 65));
-                text(canvas, "INSIGHT".substring(0, letters), 640, 285, 76, AMBER, true, Paint.Align.CENTER);
+                text(canvas, "INSIGHT".substring(0, letters), 640, 285, 76, ACCENT, true, Paint.Align.CENTER);
                 text(canvas, "HUD MODULE", 640, 334, 21, MUTED, false, Paint.Align.CENTER);
                 number(canvas, "2.3", 598, 360, 32);
             } else if (elapsed < 1400) {
-                text(canvas, "DISPLAY SEGMENT TEST", 65, 137, 20, AMBER, false);
+                text(canvas, "DISPLAY SEGMENT TEST", 65, 137, 20, ACCENT, false);
                 number(canvas, "888", 65, 177, 119);
                 number(canvas, "88", 670, 177, 52);
                 number(canvas, "88.8", 670, 311, 52);
                 text(canvas, "TEST PATTERN", 1208, 225, 16, MUTED, false, Paint.Align.RIGHT);
                 text(canvas, "ALL SEGMENTS", 1208, 359, 16, MUTED, false, Paint.Align.RIGHT);
             } else {
-                text(canvas, "INSIGHT", 65, 169, 44, AMBER, true);
+                text(canvas, "INSIGHT", 65, 169, 44, ACCENT, true);
                 text(canvas, "HUD MODULE 2.3", 65, 202, 16, MUTED, false);
                 String[] checks = {
                     "MODULE 2.3 ............ ONLINE",
@@ -1619,17 +1646,17 @@ public final class HudActivity extends Activity {
                 };
                 int visibleChecks = Math.min(checks.length, 1 + (int) ((elapsed - 1400) / 180));
                 for (int index = 0; index < visibleChecks; index++) {
-                    text(canvas, checks[index], 65, 254 + index * 37, 19, AMBER, false);
+                    text(canvas, checks[index], 65, 254 + index * 37, 19, ACCENT, false);
                 }
                 if (elapsed >= 2250) {
-                    text(canvas, "HUD MODULE ARMED", 1210, 435, 24, AMBER, true, Paint.Align.RIGHT);
+                    text(canvas, "HUD MODULE ARMED", 1210, 435, 24, ACCENT, true, Paint.Align.RIGHT);
                 }
             }
 
             line(canvas, 60, 462, 1220, 462, LINE);
             int litBlocks = Math.min(40, (int) (elapsed * 40 / STARTUP_DURATION_MS) + 1);
             for (int index = 0; index < 40; index++) {
-                paint.setColor(index < litBlocks ? AMBER : UNLIT);
+                paint.setColor(index < litBlocks ? ACCENT : UNLIT);
                 rectangle.set(65 + index * 29, 481, 85 + index * 29, 496);
                 canvas.drawRect(rectangle, paint);
             }
@@ -1641,18 +1668,18 @@ public final class HudActivity extends Activity {
             ObdBluetooth.Readings displayed = demo ? DEMO_READINGS : readings;
             if (displayed == null) displayed = EMPTY_READINGS;
             border(canvas, 40, 34, 1240, 552 + extra());
-            text(canvas, "INSIGHT", 60, 69, 24, AMBER, true);
+            text(canvas, "INSIGHT", 60, 69, 24, ACCENT, true);
             text(canvas, "HUD MODULE 2.3", 230, 68, 16, MUTED, false);
-            text(canvas, clockText(), 640, 71, 30, AMBER, true, Paint.Align.CENTER);
+            text(canvas, clockText(), 640, 71, 30, ACCENT, true, Paint.Align.CENTER);
             String heading = headingText();
             if (heading != null) text(canvas, heading, 730, 69, 20, MUTED, false);
             text(canvas, demo ? "[ DEMO - SIMULATED ]" : "[ " + linkStatus + " ]",
-                    1115, 68, 16, AMBER, false, Paint.Align.RIGHT);
+                    1115, 68, 16, ACCENT, false, Paint.Align.RIGHT);
             border(canvas, 1134, 46, 1220, 77);
             text(canvas, "BT SETUP", 1177, 67, 13, MUTED, false, Paint.Align.CENTER);
             line(canvas, 40, 88, 1240, 88, LINE);
             boolean full = fullMapActive();
-            if (!full) text(canvas, "01  VEHICLE SPEED", 65, 127, 19, AMBER, false);
+            if (!full) text(canvas, "01  VEHICLE SPEED", 65, 127, 19, ACCENT, false);
             boolean speedFromGps = false;
             if (!demo && displayed.speedMph == null) {
                 Double fromGps = gpsSpeedMph();
@@ -1665,7 +1692,7 @@ public final class HudActivity extends Activity {
             if (!full) {
                 float speedWidth = 105;
                 number(canvas, speed, 65 + (3 - speed.length()) * speedWidth * 1.2f, 142, speedWidth);
-                text(canvas, "MPH", 477, 332, 32, AMBER, false);
+                text(canvas, "MPH", 477, 332, 32, ACCENT, false);
                 if (speedFromGps) text(canvas, "GPS", 477, 358, 14, MUTED, false);
                 drawWarmup(canvas, displayed.coolantF);
                 drawRpmTrace(canvas, displayed.rpm);
@@ -1690,7 +1717,7 @@ public final class HudActivity extends Activity {
             if (full) {
                 drawMapReadouts(canvas, displayed, speed, speedFromGps);
                 paint.setStyle(Paint.Style.FILL);
-                paint.setColor(0xF0080602);
+                paint.setColor(ground(0xF0));
                 canvas.drawRect(MAP_RANGE_LEFT - 3, 95, MAP_RIGHT + 1, 125, paint);
                 drawMapMode(canvas);
             }
@@ -1714,8 +1741,8 @@ public final class HudActivity extends Activity {
                     text(canvas, fuelLine(fuelInfo), 640, footer + 30, 14, MUTED, false, Paint.Align.CENTER);
                 }
                 String ahead = aheadLine(shownRoadInfo());
-                if (ahead != null) text(canvas, ahead, 60, footer + 32, 20, AMBER, true);
-                else text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
+                if (ahead != null) text(canvas, ahead, 60, footer + 32, 20, ACCENT, true);
+                else text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, ACCENT, false);
                 text(canvas, brightText, 640, footer + 56, 12, MUTED, false, Paint.Align.CENTER);
                 text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 56, 12, MUTED, false);
                 text(canvas, "PHONE " + phoneState, 1220, footer + 31, 14, MUTED, false, Paint.Align.RIGHT);
@@ -1744,11 +1771,11 @@ public final class HudActivity extends Activity {
 
         private void drawWarmup(Canvas canvas, Double coolant) {
             text(canvas, "COOLANT", 573, 127, 12, MUTED, false, Paint.Align.CENTER);
-            text(canvas, wholeReading(coolant, "--") + "°F", 573, 331, 14, AMBER, false, Paint.Align.CENTER);
+            text(canvas, wholeReading(coolant, "--") + "°F", 573, 331, 14, ACCENT, false, Paint.Align.CENTER);
             // This is a display scale, not an engine warning threshold.
             int lit = coolant == null ? 0 : Math.max(0, (int) Math.round((coolant - 100) / 90 * 10));
             for (int index = 0; index < 10; index++) {
-                paint.setColor(index < lit ? AMBER : UNLIT);
+                paint.setColor(index < lit ? ACCENT : UNLIT);
                 float y = 297 - 16 * index;
                 canvas.drawRect(561, y, 585, y + 10, paint);
             }
@@ -1772,10 +1799,10 @@ public final class HudActivity extends Activity {
         private void drawMapMode(Canvas canvas) {
             border(canvas, MAP_RANGE_LEFT, 96, MAP_MODE_LEFT - 8, 124);
             text(canvas, RANGE_NAMES[mapRange], (MAP_RANGE_LEFT + MAP_MODE_LEFT - 8) / 2,
-                    115, 13, AMBER, false, Paint.Align.CENTER);
+                    115, 13, ACCENT, false, Paint.Align.CENTER);
             border(canvas, MAP_MODE_LEFT, 96, MAP_RIGHT, 124);
             text(canvas, headingUp ? "HEADING UP" : "NORTH UP", (MAP_MODE_LEFT + MAP_RIGHT) / 2,
-                    115, 13, AMBER, false, Paint.Align.CENTER);
+                    115, 13, ACCENT, false, Paint.Align.CENTER);
         }
 
         private float angleDelta(float from, float to) {
@@ -1829,7 +1856,7 @@ public final class HudActivity extends Activity {
 
         private void drawMapPreview(Canvas canvas, long now) {
             if (!fullMapActive()) {
-                text(canvas, "03  MOVING MAP", mapLeft(), 118, 19, AMBER, false);
+                text(canvas, "03  MOVING MAP", mapLeft(), 118, 19, ACCENT, false);
                 text(canvas, "SIMULATED", MAP_RANGE_LEFT - 12, 118, 14, MUTED, false, Paint.Align.RIGHT);
                 drawMapMode(canvas);
             }
@@ -1858,7 +1885,7 @@ public final class HudActivity extends Activity {
             canvas.drawPath(sampleLoop, paint);
             paint.setStyle(Paint.Style.FILL);
             canvas.restore();
-            demoRoadLabel(canvas, "ROUTE 08", 420, 76, anchorX, anchorY, AMBER);
+            demoRoadLabel(canvas, "ROUTE 08", 420, 76, anchorX, anchorY, ACCENT);
             demoRoadLabel(canvas, "RIVER RD", 43, 179, anchorX, anchorY, MUTED);
             demoRoadLabel(canvas, "DEPOT AVE", 390, 306, anchorX, anchorY, MUTED);
             drawMapMarker(canvas, anchorX, anchorY, course, now,
@@ -1879,7 +1906,7 @@ public final class HudActivity extends Activity {
 
         private void drawOfflineMap(Canvas canvas, long now) {
             OfflineRoadMap.Region region = roadMap.region();
-            if (!fullMapActive()) text(canvas, "03  OFFLINE MAP", mapLeft(), 118, 19, AMBER, false);
+            if (!fullMapActive()) text(canvas, "03  OFFLINE MAP", mapLeft(), 118, 19, ACCENT, false);
             if (!fullMapActive()) {
                 text(canvas, region == null ? "ALBANY REGION" : region.name,
                         MAP_RANGE_LEFT - 12, 118, 11, MUTED, false, Paint.Align.RIGHT);
@@ -1888,7 +1915,7 @@ public final class HudActivity extends Activity {
             border(canvas, mapLeft(), mapTop(), MAP_RIGHT, mapBottom());
                         String status = mapStatus(region);
             if (headingUp && "GPS FIX".equals(status) && Float.isNaN(gpsCourse)) status = "GPS FIX / WAITING FOR COURSE";
-            mapNote(canvas, status, AMBER);
+            mapNote(canvas, status, ACCENT);
             if (region == null) {
                 text(canvas, roadMap.failed() ? "MAP DATA UNAVAILABLE" : "LOADING LOCAL ROADS",
                         mapCenterX(), mapCenterY(), 19, MUTED, false, Paint.Align.CENTER);
@@ -1939,7 +1966,7 @@ public final class HudActivity extends Activity {
             paint.setColor(MUTED);
             paint.setStrokeWidth(2.1f / strokeScale);
             canvas.drawPath(scene.roads[1], paint);
-            paint.setColor(AMBER);
+            paint.setColor(ACCENT);
             paint.setStrokeWidth(3.1f / strokeScale);
             canvas.drawPath(scene.roads[2], paint);
             paint.setStrokeCap(Paint.Cap.BUTT);
@@ -1970,9 +1997,9 @@ public final class HudActivity extends Activity {
                     }
                 }
                 if (!clear) continue;
-                paint.setColor(0xFF080602);
+                paint.setColor(BACKGROUND);
                 canvas.drawRect(x - halfWidth, y - 14, x + halfWidth, y + 4, paint);
-                text(canvas, label.name, x, y, 13, AMBER, false, Paint.Align.CENTER);
+                text(canvas, label.name, x, y, 13, ACCENT, false, Paint.Align.CENTER);
                 labelNames[labelCount] = label.name;
                 labelX[labelCount] = x;
                 labelY[labelCount] = y;
@@ -1994,19 +2021,19 @@ public final class HudActivity extends Activity {
             String ahead = aheadLine(info);
             float plateTop = plateBottom - (info != null ? (ahead != null ? 166 : 142) : 128);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFF080602);
+            paint.setColor(BACKGROUND);
             canvas.drawRect(plateLeft, plateTop, plateRight, plateBottom, paint);
             line(canvas, plateLeft, plateTop, plateRight, plateTop, LINE);
             line(canvas, plateRight, plateTop, plateRight, plateBottom, LINE);
             float base = plateBottom - (info != null ? (ahead != null ? 68 : 44) : 34);
-            text(canvas, speed, plateLeft + 196, base, 84, AMBER, true, Paint.Align.RIGHT);
-            text(canvas, fromGps ? "MPH GPS" : "MPH", plateLeft + 210, base - 2, 22, AMBER, false);
+            text(canvas, speed, plateLeft + 196, base, 84, ACCENT, true, Paint.Align.RIGHT);
+            text(canvas, fromGps ? "MPH GPS" : "MPH", plateLeft + 210, base - 2, 22, ACCENT, false);
             text(canvas, wholeReading(displayed.rpm, "----") + " RPM", plateLeft + 210, base - 30, 18, MUTED, false);
             if (info != null) {
                 text(canvas, roadLine(info, 42), plateLeft + 12, plateTop + 24, 15, MUTED, false);
                 drawLimitBadge(canvas, plateRight - 112, plateTop + 36, 100, 82, info.limitMph, displayed.speedMph);
                 if (info.fuelName != null) text(canvas, fuelLine(info), plateLeft + 12, plateBottom - 10, 12, MUTED, false);
-                if (ahead != null) text(canvas, ahead, plateLeft + 12, plateBottom - 34, 20, AMBER, true);
+                if (ahead != null) text(canvas, ahead, plateLeft + 12, plateBottom - 34, 20, ACCENT, true);
             }
         }
 
@@ -2047,10 +2074,10 @@ public final class HudActivity extends Activity {
                                     Double speed) {
             boolean over = limit > 0 && speed != null && speed > limit;
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(over ? AMBER : 0xEB080602);
+            paint.setColor(over ? ACCENT : ground(0xEB));
             canvas.drawRect(x, y, x + width, y + height, paint);
             border(canvas, x, y, x + width, y + height);
-            int ink = over ? 0xFF080602 : AMBER;
+            int ink = over ? BACKGROUND : ACCENT;
             text(canvas, "LIMIT", x + width / 2, y + 20, 14, over ? ink : MUTED, false, Paint.Align.CENTER);
             text(canvas, limit > 0 ? String.valueOf(limit) : "--", x + width / 2, y + height - 14, height * 0.5f, ink,
                     true, Paint.Align.CENTER);
@@ -2059,11 +2086,11 @@ public final class HudActivity extends Activity {
         private void drawSatelliteWarning(Canvas canvas) {
             float left = mapCenterX() - 174;
             float top = mapCenterY() - 30;
-            paint.setColor(0xF2080602);
+            paint.setColor(ground(0xF2));
             canvas.drawRect(left, top, left + 348, top + 60, paint);
             border(canvas, left, top, left + 348, top + 60);
             text(canvas, "SAT NOT AVAILABLE", mapCenterX(), mapCenterY() + 7,
-                    24, AMBER, true, Paint.Align.CENTER);
+                    24, ACCENT, true, Paint.Align.CENTER);
         }
 
         private String mapStatus(OfflineRoadMap.Region region) {
@@ -2080,12 +2107,12 @@ public final class HudActivity extends Activity {
                                    double latitude, double longitude) {
             canvas.save();
             canvas.translate(x, y);
-            paint.setColor(0xFF080602);
+            paint.setColor(BACKGROUND);
             canvas.drawCircle(0, 0, 19, paint);
             long elapsed = now - lockStartedAt;
             if (lockStartedAt != 0 && elapsed < MAP_TRANSITION_MS) {
                 float fade = Math.min(1, (MAP_TRANSITION_MS - elapsed) / 370f);
-                int reticle = (Math.round(fade * 255) << 24) | (AMBER & 0xFFFFFF);
+                int reticle = (Math.round(fade * 255) << 24) | (ACCENT & 0xFFFFFF);
                 int radius = 22 + Math.max(0, MAP_LOCK_MS - (int) elapsed) / 12;
                 for (int corner = 0; corner < 4; corner++) {
                     line(canvas, radius - 8, -radius, radius, -radius, reticle);
@@ -2096,7 +2123,7 @@ public final class HudActivity extends Activity {
             if (lockStartedAt != 0 && elapsed < TARGET_CAPTION_MS) {
                 drawTargetCaption(canvas, x, y, latitude, longitude, elapsed);
             }
-            paint.setColor(AMBER);
+            paint.setColor(ACCENT);
             if (!Float.isNaN(course)) {
                 canvas.rotate(course + cameraAngle);
                 path.reset();
@@ -2118,21 +2145,21 @@ public final class HudActivity extends Activity {
             float side = x + 219 < MAP_RIGHT ? 1 : -1;
             float left = side > 0 ? 42 : -218;
             float top = Math.max(mapTop() + 4 - y, Math.min(-53, mapBottom() - 52 - y));
-            paint.setColor((Math.round(opacity * 235) << 24) | 0x080602);
+            paint.setColor((Math.round(opacity * 235) << 24) | (BACKGROUND & 0xFFFFFF));
             canvas.drawRect(left, top, left + 176, top + 44, paint);
             line(canvas, left, top, left + 176, top, alpha | (MUTED & 0xFFFFFF));
             line(canvas, side * 28, -8, side * 42, top + 34, alpha | (MUTED & 0xFFFFFF));
             text(canvas, demo ? "TARGET ZE1 / SIM" : "TARGET ZE1 / LOCK",
-                    left + 8, top + 17, 13, alpha | (AMBER & 0xFFFFFF), true);
+                    left + 8, top + 17, 13, alpha | (ACCENT & 0xFFFFFF), true);
             String coordinates = String.format(Locale.US, "%.4f%s  %.4f%s", Math.abs(latitude),
                     latitude >= 0 ? "N" : "S", Math.abs(longitude), longitude >= 0 ? "E" : "W");
-            text(canvas, coordinates, left + 8, top + 34, 12, alpha | (AMBER & 0xFFFFFF), false);
+            text(canvas, coordinates, left + 8, top + 34, 12, alpha | (ACCENT & 0xFFFFFF), false);
         }
 
         private void drawRpmTrace(Canvas canvas, Double rpm) {
             line(canvas, 65, 350, 590, 350, LINE);
-            text(canvas, "02  ENGINE RPM", 65, 372, 15, AMBER, false);
-            text(canvas, wholeReading(rpm, "----") + " RPM", 590, 372, 15, AMBER, true, Paint.Align.RIGHT);
+            text(canvas, "02  ENGINE RPM", 65, 372, 15, ACCENT, false);
+            text(canvas, wholeReading(rpm, "----") + " RPM", 590, 372, 15, ACCENT, true, Paint.Align.RIGHT);
             float chartLeft = 104;
             float chartRight = 590;
             float chartTop = 389;
@@ -2165,11 +2192,11 @@ public final class HudActivity extends Activity {
                 else path.moveTo(x, y);
                 previousValid = true;
                 if (index == count - 1) {
-                    paint.setColor(AMBER);
+                    paint.setColor(ACCENT);
                     canvas.drawCircle(x, y, 3, paint);
                 }
             }
-            paint.setColor(AMBER);
+            paint.setColor(ACCENT);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(2.5f);
             canvas.drawPath(path, paint);
@@ -2177,16 +2204,16 @@ public final class HudActivity extends Activity {
         }
 
         private void metric(Canvas canvas, String label, Double value, String unit, float y, int minimum, int maximum) {
-            text(canvas, label, 650, y, 17, AMBER, false);
+            text(canvas, label, 650, y, 17, ACCENT, false);
             String digits = unit.equals("V")
                     ? (value == null ? "--.-" : String.format(Locale.US, "%.1f", value))
                     : wholeReading(value, "--");
             number(canvas, digits, 658, y + 16, 29);
-            text(canvas, unit, 1210, y + 67, 22, AMBER, false, Paint.Align.RIGHT);
+            text(canvas, unit, 1210, y + 67, 22, ACCENT, false, Paint.Align.RIGHT);
             int segments = 16;
             int lit = value == null ? 0 : (int) Math.round(segments * (value - minimum) / (maximum - minimum));
             for (int index = 0; index < segments; index++) {
-                paint.setColor(index < lit ? AMBER : UNLIT);
+                paint.setColor(index < lit ? ACCENT : UNLIT);
                 float x = 850 + index * 20;
                 canvas.drawRect(x, y + 25, x + 16, y + 45, paint);
             }
@@ -2199,12 +2226,12 @@ public final class HudActivity extends Activity {
             for (int index = 0; index < value.length(); index++) {
                 char character = value.charAt(index);
                 if (character == '.') {
-                    paint.setColor(AMBER);
+                    paint.setColor(ACCENT);
                     float dot = width * 0.16f;
                     canvas.drawRect(x, y + width * 1.88f - dot, x + dot, y + width * 1.88f, paint);
                     x += width * 0.4f;
                 } else {
-                    digit(canvas, character, x, y, width, AMBER);
+                    digit(canvas, character, x, y, width, ACCENT);
                     x += width * 1.2f;
                 }
             }
