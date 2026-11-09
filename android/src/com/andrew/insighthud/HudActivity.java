@@ -1275,11 +1275,11 @@ public final class HudActivity extends Activity {
         private static final float MAP_LEFT_SPLIT = 650;
         private static final float MAP_LEFT_FULL = 65;
         private float mapLeft() { return fullMapActive() ? MAP_LEFT_FULL : MAP_LEFT_SPLIT; }
-        private static final float MAP_TOP = 131;
+        private float mapTop() { return fullMapActive() ? 94 : 131; }
         private static final float MAP_RIGHT = 1220;
-        private float mapBottom() { return 448 + extra(); }
+        private float mapBottom() { return (fullMapActive() ? 514 : 448) + extra(); }
         private float mapCenterX() { return (mapLeft() + MAP_RIGHT) / 2; }
-        private float mapCenterY() { return (MAP_TOP + mapBottom()) / 2; }
+        private float mapCenterY() { return (mapTop() + mapBottom()) / 2; }
         private static final float MAP_TILE_PIXELS = 350;
         private static final float MAP_MODE_LEFT = 1092;
         private static final float MAP_RANGE_LEFT = 985;
@@ -1426,7 +1426,7 @@ public final class HudActivity extends Activity {
 
         private void drawThermalLimit(Canvas canvas, long now) {
             text(canvas, "03  THERMAL LIMIT", mapLeft(), 118, 19, AMBER, false);
-            border(canvas, mapLeft(), MAP_TOP, MAP_RIGHT, mapBottom());
+            border(canvas, mapLeft(), mapTop(), MAP_RIGHT, mapBottom());
             text(canvas, "PHONE RUNNING HOT", mapCenterX(), 235, 27, AMBER, true, Paint.Align.CENTER);
             text(canvas, "BATTERY " + Math.round(batteryTemperature) + " °C", mapCenterX(), 283,
                     20, AMBER, false, Paint.Align.CENTER);
@@ -1555,7 +1555,7 @@ public final class HudActivity extends Activity {
                 drawRpmTrace(canvas, displayed.rpm);
             }
 
-            float footer = 480 + extra();
+            float footer = (full ? 520 : 480) + extra();
             if (!full) line(canvas, 620, 88, 620, footer, LINE);
             if (thermalLevel == THERMAL_LIMIT) {
                 drawThermalLimit(canvas, now);
@@ -1566,21 +1566,35 @@ public final class HudActivity extends Activity {
             } else {
                 drawMetrics(canvas, displayed);
             }
-            if (full && thermalLevel == THERMAL_NORMAL) drawMapReadouts(canvas, displayed, speed, speedFromGps);
+            if (full) {
+                drawMapReadouts(canvas, displayed, speed, speedFromGps);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(0xF0080602);
+                canvas.drawRect(MAP_RANGE_LEFT - 3, 95, MAP_RIGHT + 1, 125, paint);
+                drawMapMode(canvas);
+            }
 
             line(canvas, 40, footer, 1240, footer, LINE);
-            text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
-            text(canvas, "BRIGHT " + BRIGHTNESS_NAMES[brightnessMode] + (brightnessMode == 0
-                    ? "  " + Math.round(autoLevel * 100) + "%" : "")
-                    + "    SND " + sounds.label(ambientDark()), 640, footer + 56, 12, MUTED, false,
-                    Paint.Align.CENTER);
             String adapterName = preferences.getString("adapterName", "NO ADAPTER SELECTED");
             if (adapterName.length() > 28) adapterName = adapterName.substring(0, 28);
-            text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 56, 12, MUTED, false);
             String phoneState = (battery < 0 ? "--" : String.valueOf(battery)) + "%  /  "
                     + Math.round(batteryTemperature) + " C";
-            text(canvas, "PHONE " + phoneState, 1220, footer + 31, 14, MUTED, false, Paint.Align.RIGHT);
-            text(canvas, powered ? "EXT POWER" : "BATTERY POWER", 1220, footer + 56, 12, MUTED, false, Paint.Align.RIGHT);
+            String brightText = "BRIGHT " + BRIGHTNESS_NAMES[brightnessMode] + (brightnessMode == 0
+                    ? "  " + Math.round(autoLevel * 100) + "%" : "")
+                    + "    SND " + sounds.label(ambientDark());
+            if (full) {
+                text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 25, 12, MUTED, false);
+                text(canvas, brightText, 640, footer + 25, 12, MUTED, false, Paint.Align.CENTER);
+                text(canvas, "PHONE " + phoneState + "   " + (powered ? "EXT POWER" : "BATTERY POWER"),
+                        1220, footer + 25, 12, MUTED, false, Paint.Align.RIGHT);
+            } else {
+                text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
+                text(canvas, brightText, 640, footer + 56, 12, MUTED, false, Paint.Align.CENTER);
+                text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 56, 12, MUTED, false);
+                text(canvas, "PHONE " + phoneState, 1220, footer + 31, 14, MUTED, false, Paint.Align.RIGHT);
+                text(canvas, powered ? "EXT POWER" : "BATTERY POWER", 1220, footer + 56, 12, MUTED, false,
+                        Paint.Align.RIGHT);
+            }
         }
 
         /** Throttle, load, estimated MPG and (as a fallback) intake air; only gauges the car reports. */
@@ -1620,6 +1634,12 @@ public final class HudActivity extends Activity {
                 road.lineTo(points[index], points[index + 1]);
             }
             return road;
+        }
+
+        /** The map's one-line status: under the panel normally, in the map's corner when it fills the panel. */
+        private void mapNote(Canvas canvas, String note, int color) {
+            if (fullMapActive()) text(canvas, note, MAP_RIGHT - 10, mapBottom() - 10, 12, color, false, Paint.Align.RIGHT);
+            else text(canvas, note, mapLeft(), 469 + extra(), 12, color, false);
         }
 
         private void drawMapMode(Canvas canvas) {
@@ -1681,10 +1701,12 @@ public final class HudActivity extends Activity {
         }
 
         private void drawMapPreview(Canvas canvas, long now) {
-            text(canvas, "03  MOVING MAP", mapLeft(), 118, 19, AMBER, false);
-            text(canvas, "SIMULATED", MAP_RANGE_LEFT - 12, 118, 14, MUTED, false, Paint.Align.RIGHT);
-            drawMapMode(canvas);
-            border(canvas, mapLeft(), MAP_TOP, MAP_RIGHT, mapBottom());
+            if (!fullMapActive()) {
+                text(canvas, "03  MOVING MAP", mapLeft(), 118, 19, AMBER, false);
+                text(canvas, "SIMULATED", MAP_RANGE_LEFT - 12, 118, 14, MUTED, false, Paint.Align.RIGHT);
+                drawMapMode(canvas);
+            }
+            border(canvas, mapLeft(), mapTop(), MAP_RIGHT, mapBottom());
             float progress = (now - mapPreviewStartedAt) % 24000 / 24000f;
             sampleDrive.getPosTan(progress * sampleDrive.getLength(), marker, direction);
             float course = 90 + (float) Math.toDegrees(Math.atan2(direction[1], direction[0]));
@@ -1694,7 +1716,7 @@ public final class HudActivity extends Activity {
                     + FORWARD_OFFSET * cameraLead;
             setMapTransform(marker[0], marker[1], 1, anchorX, anchorY);
             canvas.save();
-            canvas.clipRect(mapLeft() + 1, MAP_TOP + 1, MAP_RIGHT - 1, mapBottom() - 1);
+            canvas.clipRect(mapLeft() + 1, mapTop() + 1, MAP_RIGHT - 1, mapBottom() - 1);
             canvas.save();
             canvas.concat(mapTransform);
             paint.setStyle(Paint.Style.STROKE);
@@ -1715,7 +1737,7 @@ public final class HudActivity extends Activity {
             drawMapMarker(canvas, anchorX, anchorY, course, now,
                     42.607 + (160 - marker[1]) * 0.00003, -73.700 + (marker[0] - 285) * 0.00004);
             canvas.restore();
-            text(canvas, "DEMO ROADS / GPS INACTIVE", mapLeft(), 469 + extra(), 12, MUTED, false);
+            mapNote(canvas, "DEMO ROADS / GPS INACTIVE", MUTED);
         }
 
         private void demoRoadLabel(Canvas canvas, String name, float x, float y,
@@ -1730,14 +1752,16 @@ public final class HudActivity extends Activity {
 
         private void drawOfflineMap(Canvas canvas, long now) {
             OfflineRoadMap.Region region = roadMap.region();
-            text(canvas, "03  OFFLINE MAP", mapLeft(), 118, 19, AMBER, false);
-            text(canvas, region == null ? "ALBANY REGION" : region.name,
-                    MAP_RANGE_LEFT - 12, 118, 11, MUTED, false, Paint.Align.RIGHT);
-            drawMapMode(canvas);
-            border(canvas, mapLeft(), MAP_TOP, MAP_RIGHT, mapBottom());
+            if (!fullMapActive()) text(canvas, "03  OFFLINE MAP", mapLeft(), 118, 19, AMBER, false);
+            if (!fullMapActive()) {
+                text(canvas, region == null ? "ALBANY REGION" : region.name,
+                        MAP_RANGE_LEFT - 12, 118, 11, MUTED, false, Paint.Align.RIGHT);
+                drawMapMode(canvas);
+            }
+            border(canvas, mapLeft(), mapTop(), MAP_RIGHT, mapBottom());
                         String status = mapStatus(region);
             if (headingUp && "GPS FIX".equals(status) && Float.isNaN(gpsCourse)) status = "GPS FIX / WAITING FOR COURSE";
-            text(canvas, status, mapLeft(), 469 + extra(), 12, AMBER, false);
+            mapNote(canvas, status, AMBER);
             if (region == null) {
                 text(canvas, roadMap.failed() ? "MAP DATA UNAVAILABLE" : "LOADING LOCAL ROADS",
                         mapCenterX(), mapCenterY(), 19, MUTED, false, Paint.Align.CENTER);
@@ -1764,7 +1788,7 @@ public final class HudActivity extends Activity {
             setMapTransform((float) (viewX - scene.x), (float) (viewY - scene.y),
                     MAP_TILE_PIXELS, mapCenterX(), anchorY);
             canvas.save();
-            canvas.clipRect(mapLeft() + 1, MAP_TOP + 1, MAP_RIGHT - 1, mapBottom() - 1);
+            canvas.clipRect(mapLeft() + 1, mapTop() + 1, MAP_RIGHT - 1, mapBottom() - 1);
             canvas.save();
             canvas.concat(mapTransform);
             paint.setStyle(Paint.Style.STROKE);
@@ -1795,7 +1819,7 @@ public final class HudActivity extends Activity {
                 paint.setTextSize(13);
                 float halfWidth = paint.measureText(label.name) / 2 + 5;
                 if (x - halfWidth < mapLeft() + 4 || x + halfWidth > MAP_RIGHT - 4
-                        || y < MAP_TOP + 16 || y > mapBottom() - 18) continue;
+                        || y < mapTop() + 16 || y > mapBottom() - 18) continue;
                 if (tracking && Math.abs(x - mapCenterX()) < halfWidth + 30 && Math.abs(y - anchorY) < 32) continue;
                 boolean clear = true;
                 for (int index = 0; index < labelCount; index++) {
@@ -1900,7 +1924,7 @@ public final class HudActivity extends Activity {
             int alpha = Math.round(opacity * 255) << 24;
             float side = x + 219 < MAP_RIGHT ? 1 : -1;
             float left = side > 0 ? 42 : -218;
-            float top = Math.max(MAP_TOP + 4 - y, Math.min(-53, mapBottom() - 52 - y));
+            float top = Math.max(mapTop() + 4 - y, Math.min(-53, mapBottom() - 52 - y));
             paint.setColor((Math.round(opacity * 235) << 24) | 0x080602);
             canvas.drawRect(left, top, left + 176, top + 44, paint);
             line(canvas, left, top, left + 176, top, alpha | (MUTED & 0xFFFFFF));
@@ -2080,14 +2104,14 @@ public final class HudActivity extends Activity {
             float mapX = mirror ? 1280 - x : x;
             if (mapX >= 1126 && mapX <= 1228 && y >= 39 && y <= 85) return 8;
             if (thermalLevel == THERMAL_NORMAL && mapPreview && mapX >= MAP_RANGE_LEFT && mapX <= MAP_MODE_LEFT - 8
-                    && y >= 88 && y < MAP_TOP) return 7;
+                    && y >= 88 && y < (fullMapActive() ? 126 : 131)) return 7;
             if (thermalLevel == THERMAL_NORMAL && mapPreview && mapX >= MAP_MODE_LEFT - 7 && mapX <= MAP_RIGHT + 4
-                    && y >= 88 && y < MAP_TOP) return 6;
+                    && y >= 88 && y < (fullMapActive() ? 126 : 131)) return 6;
             if (thermalLevel == THERMAL_NORMAL && mapPreview && !demo && mapX >= mapLeft() && mapX <= MAP_RIGHT
-                    && y >= MAP_TOP && y <= 480 + extra()
+                    && y >= mapTop() && y <= (fullMapActive() ? 520 : 480) + extra()
                     && (!hasPreciseLocation() || !gpsEnabled() || (!powered && !accessoryActive))) return 5;
             if (thermalLevel == THERMAL_NORMAL && mapPreview && mapX >= mapLeft() && mapX <= MAP_RIGHT
-                    && y >= MAP_TOP && y <= 480 + extra()) return 9;
+                    && y >= mapTop() && y <= (fullMapActive() ? 520 : 480) + extra()) return 9;
             if (extra() > 0 || y < 570 || y > 620 || x < CONTROL_LEFT) return -1;
             int index = (int) ((x - CONTROL_LEFT) / CONTROL_STEP);
             if (index >= CONTROL_COUNT || x > CONTROL_LEFT + index * CONTROL_STEP + CONTROL_WIDTH) return -1;
