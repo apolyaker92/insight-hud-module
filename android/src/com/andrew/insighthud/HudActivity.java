@@ -56,6 +56,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -74,6 +75,18 @@ public final class HudActivity extends Activity {
     private double lastLookupLat, lastLookupLon;
     private long overSince, lastOverAlertAt;
     private DriveLog driveLog;
+    /** Repaints on the minute so the header clock stays right without any other redraw. */
+    private final Runnable clockTick = new Runnable() {
+        @Override public void run() {
+            if (hud != null) hud.invalidate();
+            scheduleClock();
+        }
+    };
+
+    private void scheduleClock() {
+        main.removeCallbacks(clockTick);
+        main.postDelayed(clockTick, 60_000 - System.currentTimeMillis() % 60_000 + 50);
+    }
     private boolean headingUp;
     private int mapRange;
     private static final String[] RANGE_NAMES = {"NORMAL", "WIDE", "CLOSE"};
@@ -375,6 +388,7 @@ public final class HudActivity extends Activity {
     @Override protected void onStart() {
         super.onStart();
         foreground = true;
+        scheduleClock();
         main.post(preloadSoundLater);
         updateLightSensor();
         startTripAnimation();
@@ -650,6 +664,7 @@ public final class HudActivity extends Activity {
 
     @Override protected void onStop() {
         foreground = false;
+        main.removeCallbacks(clockTick);
         updateLightSensor();
         updateMap();
         releaseStartupSound();
@@ -1580,6 +1595,7 @@ public final class HudActivity extends Activity {
             border(canvas, 40, 34, 1240, 552 + extra());
             text(canvas, "INSIGHT", 60, 69, 24, AMBER, true);
             text(canvas, "HUD MODULE 2.3", 230, 68, 16, MUTED, false);
+            text(canvas, clockText(), 640, 71, 30, AMBER, true, Paint.Align.CENTER);
             text(canvas, demo ? "[ DEMO - SIMULATED ]" : "[ " + linkStatus + " ]",
                     1115, 68, 16, AMBER, false, Paint.Align.RIGHT);
             border(canvas, 1134, 46, 1220, 77);
@@ -1938,6 +1954,12 @@ public final class HudActivity extends Activity {
                 drawLimitBadge(canvas, plateRight - 112, plateTop + 36, 100, 82, info.limitMph, displayed.speedMph);
                 if (info.fuelName != null) text(canvas, fuelLine(info), plateLeft + 12, plateBottom - 10, 12, MUTED, false);
             }
+        }
+
+        /** The time of day, in the phone's 12 or 24 hour style. */
+        private String clockText() {
+            String pattern = android.text.format.DateFormat.is24HourFormat(HudActivity.this) ? "HH:mm" : "h:mm a";
+            return new SimpleDateFormat(pattern, Locale.US).format(new Date());
         }
 
         private String roadLine(OfflineRoadMap.RoadInfo info, int max) {
