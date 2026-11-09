@@ -69,7 +69,7 @@ public final class HudActivity extends Activity {
     private boolean headingUp;
     private int mapRange;
     private static final String[] RANGE_NAMES = {"NORMAL", "WIDE", "CLOSE"};
-    private static final float[] RANGE_ZOOM = {1.4f, 1.05f, 1.9f};
+    private static final float[] RANGE_ZOOM = {1.4f, 1.05f, 3.0f};
     private TripStats trip = new TripStats();
     private JSONObject shutdownReport;
     private long accessoryLostAt;
