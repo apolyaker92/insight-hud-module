@@ -11,6 +11,17 @@ public final class ObdTests {
     private static int failures;
     private static long fakeNow;
 
+    /** Packs segments (ax, ay, bx, by, ...) as the road pack does: little-endian uint16 fractions of a tile. */
+    private static byte[] segments(double... values) {
+        byte[] bytes = new byte[values.length * 2];
+        for (int i = 0; i < values.length; i++) {
+            int fixed = (int) Math.round(values[i] * 65535);
+            bytes[i * 2] = (byte) fixed;
+            bytes[i * 2 + 1] = (byte) (fixed >> 8);
+        }
+        return bytes;
+    }
+
     private static void check(String name, boolean condition) {
         System.out.println((condition ? "PASS  " : "FAIL  ") + name);
         if (!condition) failures++;
@@ -211,6 +222,22 @@ public final class ObdTests {
             gaveUp = true;
         }
         check("it gives up cleanly when nothing answers", gaveUp);
+
+        // A horizontal road across the middle of a tile, and a vertical one down its right side.
+        byte[] roads = segments(0, 0.5, 1, 0.5, 0.9, 0, 0.9, 1);
+        check("a point on a road is zero away", RoadLookup.nearestSquared(roads, 0.3, 0.5) < 1e-9);
+        check("distance is to the nearest road", Math.abs(Math.sqrt(RoadLookup.nearestSquared(roads, 0.3, 0.45)) - 0.05) < 1e-4
+                && Math.abs(Math.sqrt(RoadLookup.nearestSquared(roads, 0.88, 0.1)) - 0.02) < 1e-4);
+        check("distance past a segment's end measures to the end point",
+                Math.abs(Math.sqrt(RoadLookup.nearestSquared(segments(0.2, 0.5, 0.4, 0.5), 0.5, 0.5)) - 0.1) < 1e-4);
+        check("no segments means no road", Double.isInfinite(RoadLookup.nearestSquared(new byte[0], 0.5, 0.5)));
+        double paces = RoadLookup.metersPerTile(42.6, 1 << 14);
+        check("a z14 tile is about 1.8 km at Albany's latitude", paces > 1750 && paces < 1900);
+        check("35 m is a small part of a tile", 35 / paces < 0.02);
+        check("compass: east", "E".equals(RoadLookup.bearing(1, 0)));
+        check("compass: north is up the screen", "N".equals(RoadLookup.bearing(0, -1)));
+        check("compass: south-west", "SW".equals(RoadLookup.bearing(-1, 1)));
+        check("miles", Math.abs(RoadLookup.metersToMiles(1609.344) - 1) < 1e-9);
 
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);

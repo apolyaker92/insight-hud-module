@@ -66,6 +66,12 @@ public final class HudActivity extends Activity {
     private boolean demo;
     private boolean mapPreview;
     private boolean fullMap;
+    private boolean roadInfoOn;
+    private OfflineRoadMap.RoadInfo roadInfo;
+    private long lastLookupAt;
+    private double lastLookupLat, lastLookupLon;
+    private long overSince, lastOverAlertAt;
+    private DriveLog driveLog;
     private boolean headingUp;
     private int mapRange;
     private static final String[] RANGE_NAMES = {"NORMAL", "WIDE", "CLOSE"};
@@ -150,6 +156,8 @@ public final class HudActivity extends Activity {
     private BluetoothAdapter bluetooth;
     private ObdBluetooth obd;
     private ObdBluetooth.Readings readings;
+    private static final OfflineRoadMap.RoadInfo DEMO_ROAD_INFO =
+            new OfflineRoadMap.RoadInfo("DEMO AVENUE", 35, "DEMOVILLE", "DEMO FUEL", 1.2, "NE");
     private static final ObdBluetooth.Readings DEMO_READINGS = new ObdBluetooth.Readings(46d, 2400d, 188d, 85d, 13.8d, 42d, 28d, 0.87d, 52d);
     private static final ObdBluetooth.Readings EMPTY_READINGS = new ObdBluetooth.Readings(null, null, null, null, null, null);
     private static final float[] DEMO_RPM = {820, 880, 1100, 1550, 2250, 3250, 4500, 5000, 3550, 2950,
@@ -186,6 +194,9 @@ public final class HudActivity extends Activity {
     };
     private final Runnable expireGpsFix = () -> {
         gpsFix = null;
+        roadInfo = null;
+        lastLookupAt = 0;
+        overSince = 0;
         gpsCourse = Float.NaN;
         refreshMapTiles();
         hud.invalidate();
@@ -212,6 +223,7 @@ public final class HudActivity extends Activity {
             main.removeCallbacks(expireGpsFix);
             main.postDelayed(expireGpsFix, GPS_STALE_MS - Math.max(0, age));
             refreshMapTiles();
+            lookupRoadInfo(location);
             hud.invalidate();
         }
 
@@ -295,6 +307,7 @@ public final class HudActivity extends Activity {
         applyOrientation();
         mapPreview = preferences.getBoolean("mapPreview", false);
         fullMap = preferences.getBoolean("fullMap", false);
+        roadInfoOn = preferences.getBoolean("roadInfo", true);
         headingUp = preferences.getBoolean("headingUp", false);
         mapRange = Math.max(0, Math.min(RANGE_NAMES.length - 1, preferences.getInt("mapRange", 0)));
         mapPreviewStartedAt = SystemClock.uptimeMillis();
@@ -366,6 +379,7 @@ public final class HudActivity extends Activity {
         switchSounds.release();
         switchSounds = null;
         roadMap.close();
+        if (driveLog != null) driveLog.close();
         unregisterReceiver(batteryReceiver);
         super.onDestroy();
     }
@@ -634,6 +648,7 @@ public final class HudActivity extends Activity {
         applyBrightness();
         updateLightSensor();
         if (standby) {
+            if (driveLog != null) driveLog.close();
             main.removeCallbacks(preloadSoundLater);
             if (startupSound != null) {
                 startupSound.release();
@@ -800,12 +815,11 @@ public final class HudActivity extends Activity {
 
     private void updateMap() {
         boolean liveMap = foreground && mapPreview && !demo && thermalLevel == THERMAL_NORMAL;
+        boolean wantInfo = foreground && roadInfoOn && !demo && thermalLevel == THERMAL_NORMAL;
         if (gpsTestActive && (!liveMap || accessoryActive)) setGpsTest(false);
-        if (liveMap) {
-            roadMap.open();
-            refreshMapTiles();
-        }
-        boolean wantGps = liveMap && (accessoryActive || gpsTestActive)
+        if (liveMap || wantInfo) roadMap.open();
+        if (liveMap) refreshMapTiles();
+        boolean wantGps = (liveMap || wantInfo) && (accessoryActive || gpsTestActive)
                 && hasPreciseLocation() && locationManager != null;
         if (wantGps == gpsRegistered) return;
         if (wantGps) {
@@ -946,6 +960,49 @@ public final class HudActivity extends Activity {
     }
 
     /** GPS speed in mph, or null when GPS is off, has no fix, or the fix is too old. */
+    /** Asks the map for the road, limit, town and fuel at a fix, at most about once every couple of seconds. */
+    private void lookupRoadInfo(Location location) {
+        if (!roadInfoOn || demo || roadMap == null) return;
+        long now = SystemClock.uptimeMillis();
+        float[] moved = new float[1];
+        Location.distanceBetween(lastLookupLat, lastLookupLon, location.getLatitude(), location.getLongitude(), moved);
+        if (lastLookupAt != 0 && (now - lastLookupAt < 1500 || (moved[0] < 15 && now - lastLookupAt < 8000))) return;
+        lastLookupAt = now;
+        lastLookupLat = location.getLatitude();
+        lastLookupLon = location.getLongitude();
+        roadMap.lookup(location.getLatitude(), location.getLongitude(), info -> {
+            roadInfo = info;
+            checkOverLimit();
+            hud.invalidate();
+        });
+    }
+
+    /** The info to show: simulated in Demo, otherwise only while there is a live fix. */
+    private OfflineRoadMap.RoadInfo shownRoadInfo() {
+        if (!roadInfoOn) return null;
+        return demo ? DEMO_ROAD_INFO : gpsFix == null ? null : roadInfo;
+    }
+
+    private Double currentSpeedMph() {
+        return readings != null && readings.speedMph != null ? readings.speedMph : gpsSpeedMph();
+    }
+
+    /** A quiet banner when well over the posted limit for a few seconds, at most every 90 seconds. */
+    private void checkOverLimit() {
+        OfflineRoadMap.RoadInfo info = roadInfo;
+        Double speed = currentSpeedMph();
+        if (demo || info == null || info.limitMph <= 0 || speed == null || speed < info.limitMph + 10) {
+            overSince = 0;
+            return;
+        }
+        long now = SystemClock.uptimeMillis();
+        if (overSince == 0) overSince = now;
+        if (now - overSince >= 4000 && now - lastOverAlertAt >= 90_000) {
+            lastOverAlertAt = now;
+            raiseAlert("OVER LIMIT " + info.limitMph, Alerts.INFO);
+        }
+    }
+
     private Double gpsSpeedMph() {
         Location fix = gpsFix;
         if (fix == null || !gpsRegistered) return null;
@@ -982,7 +1039,17 @@ public final class HudActivity extends Activity {
             rpmCount = 0;
             return;
         }
-        if (accessoryActive && powered && !demo) trip.sample(update, SystemClock.elapsedRealtime());
+        if (accessoryActive && powered && !demo) {
+            trip.sample(update, SystemClock.elapsedRealtime());
+            if (driveLog == null) {
+                java.io.File external = getExternalFilesDir(null);
+                if (external != null) driveLog = new DriveLog(new java.io.File(external, "logs"));
+            }
+            if (driveLog != null) {
+                driveLog.sample(SystemClock.elapsedRealtime(), update, gpsFix, gpsSpeedMph(), shownRoadInfo());
+            }
+            checkOverLimit();
+        }
         rpmHistory[rpmNext] = update.rpm == null ? Float.NaN : update.rpm.floatValue();
         rpmNext = (rpmNext + 1) % rpmHistory.length;
         rpmCount = Math.min(rpmCount + 1, rpmHistory.length);
@@ -1004,7 +1071,8 @@ public final class HudActivity extends Activity {
                         "Night quiet: " + (sounds.nightQuiet ? "ON" : "OFF"),
                         "Bluetooth off when parked: " + (preferences.getBoolean("btParkOff", true) ? "ON" : "OFF"),
                         "Flip screen 180: " + (preferences.getBoolean("flipScreen", true) ? "ON" : "OFF"),
-                        "Full screen map: " + (fullMap ? "ON" : "OFF")}, (dialog, choice) -> {
+                        "Full screen map: " + (fullMap ? "ON" : "OFF"),
+                        "Road info (limit, road, fuel): " + (roadInfoOn ? "ON" : "OFF")}, (dialog, choice) -> {
                     switch (choice) {
                         case 0:
                             chooseAdapter();
@@ -1054,6 +1122,14 @@ public final class HudActivity extends Activity {
                             break;
                         case 14:
                             activateControl(9);
+                            break;
+                        case 15:
+                            roadInfoOn = !roadInfoOn;
+                            preferences.edit().putBoolean("roadInfo", roadInfoOn).apply();
+                            roadInfo = null;
+                            lastLookupAt = 0;
+                            updateMap();
+                            hud.invalidate();
                             break;
                     }
                 }).setNegativeButton("CLOSE", null).show();
@@ -1564,6 +1640,11 @@ public final class HudActivity extends Activity {
                 if (speedFromGps) text(canvas, "GPS", 477, 358, 14, MUTED, false);
                 drawWarmup(canvas, displayed.coolantF);
                 drawRpmTrace(canvas, displayed.rpm);
+                OfflineRoadMap.RoadInfo info = shownRoadInfo();
+                if (info != null) {
+                    text(canvas, roadLine(info, 24), 522, 127, 14, MUTED, false, Paint.Align.RIGHT);
+                    drawLimitBadge(canvas, 452, 168, 90, 84, info.limitMph, displayed.speedMph);
+                }
             }
 
             float footer = (full ? 520 : 480) + extra();
@@ -1599,6 +1680,10 @@ public final class HudActivity extends Activity {
                 text(canvas, "PHONE " + phoneState + "   " + (powered ? "EXT POWER" : "BATTERY POWER"),
                         1220, footer + 25, 12, MUTED, false, Paint.Align.RIGHT);
             } else {
+                OfflineRoadMap.RoadInfo fuelInfo = shownRoadInfo();
+                if (fuelInfo != null && fuelInfo.fuelName != null) {
+                    text(canvas, fuelLine(fuelInfo), 640, footer + 30, 14, MUTED, false, Paint.Align.CENTER);
+                }
                 text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, AMBER, false);
                 text(canvas, brightText, 640, footer + 56, 12, MUTED, false, Paint.Align.CENTER);
                 text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 56, 12, MUTED, false);
@@ -1871,19 +1956,58 @@ public final class HudActivity extends Activity {
 
         /** Speed and rpm over the corner of a full-screen map, on a dark plate so the roads never fight the digits. */
         private void drawMapReadouts(Canvas canvas, ObdBluetooth.Readings displayed, String speed, boolean fromGps) {
+            OfflineRoadMap.RoadInfo info = shownRoadInfo();
             float plateLeft = mapLeft() + 1;
-            float plateRight = plateLeft + 330;
+            float plateRight = plateLeft + (info != null ? 440 : 330);
             float plateBottom = mapBottom() - 1;
-            float plateTop = plateBottom - 128;
+            float plateTop = plateBottom - (info != null ? 142 : 128);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xEB080602);
+            paint.setColor(0xFF080602);
             canvas.drawRect(plateLeft, plateTop, plateRight, plateBottom, paint);
             line(canvas, plateLeft, plateTop, plateRight, plateTop, LINE);
             line(canvas, plateRight, plateTop, plateRight, plateBottom, LINE);
-            text(canvas, speed, plateLeft + 196, plateBottom - 34, 84, AMBER, true, Paint.Align.RIGHT);
-            text(canvas, fromGps ? "MPH GPS" : "MPH", plateLeft + 210, plateBottom - 36, 22, AMBER, false);
-            text(canvas, wholeReading(displayed.rpm, "----") + " RPM", plateLeft + 210, plateBottom - 64,
-                    18, MUTED, false);
+            float base = plateBottom - (info != null ? 44 : 34);
+            text(canvas, speed, plateLeft + 196, base, 84, AMBER, true, Paint.Align.RIGHT);
+            text(canvas, fromGps ? "MPH GPS" : "MPH", plateLeft + 210, base - 2, 22, AMBER, false);
+            text(canvas, wholeReading(displayed.rpm, "----") + " RPM", plateLeft + 210, base - 30, 18, MUTED, false);
+            if (info != null) {
+                text(canvas, roadLine(info, 42), plateLeft + 12, plateTop + 24, 15, MUTED, false);
+                drawLimitBadge(canvas, plateRight - 112, plateTop + 36, 100, 82, info.limitMph, displayed.speedMph);
+                if (info.fuelName != null) text(canvas, fuelLine(info), plateLeft + 12, plateBottom - 10, 12, MUTED, false);
+            }
+        }
+
+        private String roadLine(OfflineRoadMap.RoadInfo info, int max) {
+            String road = info.road == null ? "" : info.road;
+            String place = info.place == null ? "" : info.place;
+            if (road.isEmpty() || place.isEmpty()) {
+                String only = road.isEmpty() ? place : road;
+                return only.length() > max ? only.substring(0, max) : only;
+            }
+            String tail = "  /  " + place;
+            if (road.length() + tail.length() <= max) return road + tail;
+            // Too long: shorten the street so the town still fits, or drop the town if it is long itself.
+            int room = max - tail.length();
+            return room >= 10 ? road.substring(0, room) + tail : (road.length() > max ? road.substring(0, max) : road);
+        }
+
+        private String fuelLine(OfflineRoadMap.RoadInfo info) {
+            String name = info.fuelName.length() > 18 ? info.fuelName.substring(0, 18) : info.fuelName;
+            return String.format(Locale.US, "FUEL  %s  %.1f MI %s", name, info.fuelMiles, info.fuelBearing);
+        }
+
+        /** The posted limit in a box; filled when the car is over it, dashes when the data has no limit here. */
+        private void drawLimitBadge(Canvas canvas, float x, float y, float width, float height, int limit,
+                                    Double speed) {
+            boolean over = limit > 0 && speed != null && speed > limit;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(over ? AMBER : 0xEB080602);
+            canvas.drawRect(x, y, x + width, y + height, paint);
+            border(canvas, x, y, x + width, y + height);
+            int ink = over ? 0xFF080602 : AMBER;
+            text(canvas, "LIMIT", x + width / 2, y + 20, 14, over ? ink : MUTED, false, Paint.Align.CENTER);
+            text(canvas, limit > 0 ? String.valueOf(limit) : "--", x + width / 2, y + height - 14, height * 0.5f, ink,
+                    true, Paint.Align.CENTER);
         }
 
         private void drawSatelliteWarning(Canvas canvas) {

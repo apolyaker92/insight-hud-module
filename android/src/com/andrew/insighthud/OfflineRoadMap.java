@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 /** Loads only the road tiles around the display, independently of the GPS provider. */
 final class OfflineRoadMap {
@@ -68,6 +69,25 @@ final class OfflineRoadMap {
         }
     }
 
+    /** What the pack knows about where a fix is: the road, its posted limit, the town and the nearest fuel. */
+    static final class RoadInfo {
+        final String road;      // null when the fix is not on a mapped road
+        final int limitMph;     // 0 when no limit is posted in the data
+        final String place;
+        final String fuelName;  // null when none is in range
+        final double fuelMiles;
+        final String fuelBearing;
+
+        RoadInfo(String road, int limitMph, String place, String fuelName, double fuelMiles, String fuelBearing) {
+            this.road = road;
+            this.limitMph = limitMph;
+            this.place = place;
+            this.fuelName = fuelName;
+            this.fuelMiles = fuelMiles;
+            this.fuelBearing = fuelBearing;
+        }
+    }
+
     static final class Label {
         final String name;
         final float x, y;
@@ -103,12 +123,14 @@ final class OfflineRoadMap {
         final SQLiteDatabase database;
         final Region region;
         final boolean compact;
+        final boolean info; // has the ways, places and pois tables
         final int minX, maxX, minY, maxY;
 
-        Pack(SQLiteDatabase database, Region region) {
+        Pack(SQLiteDatabase database, Region region, boolean info) {
             this.database = database;
             this.region = region;
             this.compact = region.compactGeometry;
+            this.info = info;
             minX = (int) Math.floor(tileX(region.west));
             maxX = (int) Math.floor(tileX(region.east));
             minY = (int) Math.floor(tileY(region.north));
@@ -248,7 +270,13 @@ final class OfflineRoadMap {
                 roads.getColumnCount();
                 labels.getColumnCount();
             }
-            return new Pack(candidate, new Region(metadata));
+            boolean info;
+            try (Cursor tables = candidate.rawQuery(
+                    "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('ways', 'places', 'pois')",
+                    null)) {
+                info = tables.moveToFirst() && tables.getInt(0) == 3;
+            }
+            return new Pack(candidate, new Region(metadata), info);
         } catch (RuntimeException error) {
             candidate.close();
             throw error;
@@ -306,6 +334,112 @@ final class OfflineRoadMap {
             }
         }
         return result;
+    }
+
+    /** Looks up the road under a fix off the main thread; the callback gets null when there is nothing to say. */
+    void lookup(double latitude, double longitude, Consumer<RoadInfo> done) {
+        if (region == null || failed || closed) return;
+        worker.execute(() -> {
+            RoadInfo info = null;
+            try {
+                info = readInfo(latitude, longitude);
+            } catch (RuntimeException error) {
+                Log.w(TAG, "Could not look up the road", error);
+            }
+            RoadInfo result = info;
+            main.post(() -> {
+                if (!closed) done.accept(result);
+            });
+        });
+    }
+
+    private static final int PLACE_RADIUS = 6;   // tiles, roughly 11 km
+    private static final int FUEL_RADIUS = 14;   // tiles, roughly 25 km
+    private static final double PLACE_MAX_METERS = 9000;
+
+    private RoadInfo readInfo(double latitude, double longitude) {
+        double fx = tileX(longitude);
+        double fy = tileY(latitude);
+        int tx = (int) Math.floor(fx);
+        int ty = (int) Math.floor(fy);
+        Pack pack = null;
+        for (Pack candidate : new Pack[]{local, wide}) {
+            if (candidate != null && candidate.info && candidate.covers(tx, ty, 1)) {
+                pack = candidate;
+                break;
+            }
+        }
+        if (pack == null) return null;
+        SQLiteDatabase database = pack.database;
+        double meters = RoadLookup.metersPerTile(latitude, WORLD);
+
+        String road = null;
+        int limit = 0;
+        double best = Double.POSITIVE_INFINITY;
+        String[] around = {String.valueOf(tx - 1), String.valueOf(tx + 1), String.valueOf(ty - 1),
+                String.valueOf(ty + 1)};
+        try (Cursor cursor = database.rawQuery("SELECT x, y, name, mph, geometry FROM ways "
+                + "WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?", around)) {
+            while (cursor.moveToNext()) {
+                double distance = RoadLookup.nearestSquared(cursor.getBlob(4),
+                        fx - cursor.getInt(0), fy - cursor.getInt(1));
+                if (distance < best) {
+                    best = distance;
+                    road = cursor.getString(2);
+                    limit = cursor.getInt(3);
+                }
+            }
+        }
+        if (Math.sqrt(best) * meters > RoadLookup.ROAD_MATCH_METERS) {
+            road = null;
+            limit = 0;
+        } else if (road != null && road.isEmpty()) {
+            road = null;
+        }
+
+        String place = null;
+        double placeBest = Double.POSITIVE_INFINITY;
+        int placeKind = 99;
+        String[] nearby = {String.valueOf(tx - PLACE_RADIUS), String.valueOf(tx + PLACE_RADIUS),
+                String.valueOf(ty - PLACE_RADIUS), String.valueOf(ty + PLACE_RADIUS)};
+        try (Cursor cursor = database.rawQuery("SELECT name, kind, x, y FROM places "
+                + "WHERE tx BETWEEN ? AND ? AND ty BETWEEN ? AND ?", nearby)) {
+            while (cursor.moveToNext()) {
+                int kind = Math.min(cursor.getInt(1), 3);
+                double dx = cursor.getDouble(2) - fx;
+                double dy = cursor.getDouble(3) - fy;
+                double distance = Math.sqrt(dx * dx + dy * dy) * meters;
+                if (distance > PLACE_MAX_METERS) continue;
+                // A town or village within reach beats a nearer hamlet.
+                boolean better = (kind <= 2) != (placeKind <= 2) ? kind <= 2 : distance < placeBest;
+                if (better) {
+                    place = cursor.getString(0);
+                    placeBest = distance;
+                    placeKind = kind;
+                }
+            }
+        }
+
+        String fuel = null;
+        double fuelBest = Double.POSITIVE_INFINITY;
+        String bearing = null;
+        String[] farther = {String.valueOf(tx - FUEL_RADIUS), String.valueOf(tx + FUEL_RADIUS),
+                String.valueOf(ty - FUEL_RADIUS), String.valueOf(ty + FUEL_RADIUS)};
+        try (Cursor cursor = database.rawQuery("SELECT name, x, y FROM pois WHERE kind = 1 "
+                + "AND tx BETWEEN ? AND ? AND ty BETWEEN ? AND ?", farther)) {
+            while (cursor.moveToNext()) {
+                double dx = cursor.getDouble(1) - fx;
+                double dy = cursor.getDouble(2) - fy;
+                double distance = Math.sqrt(dx * dx + dy * dy) * meters;
+                if (distance < fuelBest) {
+                    fuelBest = distance;
+                    fuel = cursor.getString(0);
+                    bearing = RoadLookup.bearing(dx, dy);
+                }
+            }
+        }
+        return new RoadInfo(road, limit, place, fuel,
+                fuel == null ? Double.NaN : RoadLookup.metersToMiles(fuelBest), bearing);
     }
 
     private static float readOffset(ByteBuffer geometry, boolean compactGeometry) {
