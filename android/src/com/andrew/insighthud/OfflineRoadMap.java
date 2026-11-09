@@ -210,6 +210,8 @@ final class OfflineRoadMap {
 
     private Region openRegion() throws IOException {
         File external = context.getExternalFilesDir(null);
+        Log.i(TAG, "Map pack folder " + external + " wide="
+                + (external == null ? -1 : new File(external, EXTERNAL_PACK).length()));
         if (external != null) {
             File detailed = new File(external, LOCAL_PACK);
             if (detailed.isFile()) {
