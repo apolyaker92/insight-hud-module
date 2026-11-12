@@ -360,6 +360,39 @@ public final class ObdTests {
                 && RouteTrack.turnKind(35) == RouteTrack.SLIGHT_RIGHT && RouteTrack.turnKind(-90) == RouteTrack.LEFT
                 && RouteTrack.turnKind(140) == RouteTrack.SHARP_RIGHT && RouteTrack.turnKind(-175) == RouteTrack.UTURN);
 
+        // ---- offline router ----
+        RouteTile gridTile = RouteTile.decode(java.util.Base64.getDecoder().decode(RouterTestData.TILE));
+        check("tile decodes", gridTile.nodeCount() == 16 && gridTile.edgeCount() == 45);
+        check("tile edge names", gridTile.nameOf(0).startsWith("Row") || gridTile.nameOf(0).startsWith("Col"));
+        Router router = new Router((level, x, y) -> level == 0 && x == 428 && y == 528 ? gridTile : null);
+        double[] n00 = {42.001, -72.999}, n01 = {42.001, -72.998}, n02 = {42.001, -72.997};
+        double[] n22 = {42.003, -72.997}, n30 = {42.004, -72.999}, n31 = {42.004, -72.998};
+        double[] n33 = {42.004, -72.996}, n03 = {42.001, -72.996};
+        Router.Result straightNorth = router.route(n01[0], n01[1], Double.NaN, n31[0], n31[1]);
+        check("straight route found", straightNorth.error == null);
+        check("straight route length", Math.abs(straightNorth.meters - 333) < 15);
+        check("straight route has no manoeuvres", straightNorth.steps.isEmpty());
+        Router.Result corner = router.route(n00[0], n00[1], Double.NaN, n22[0], n22[1]);
+        check("corner route found", corner.error == null && Math.abs(corner.meters - 386) < 20);
+        check("one turn, preferring right to left", corner.steps.size() == 1 && "right".equals(corner.steps.get(0).modifier)
+                && "Row 2".equals(corner.steps.get(0).street) && Math.abs(corner.steps.get(0).atMeters - 222) < 20);
+        RouteTrack built = new RouteTrack("", corner.lat, corner.lon, corner.steps, corner.seconds);
+        check("router output becomes a track", built.steps.length == 2 && built.steps[0].kind == RouteTrack.RIGHT
+                && built.steps[1].kind == RouteTrack.ARRIVE);
+        Router.Result banned = router.route(n00[0], n00[1], Double.NaN, n30[0], n30[1]);
+        check("a banned turn forces a detour", banned.error == null && banned.meters > 400 && banned.meters < 700);
+        Router.Result oneWay = router.route(n33[0], n33[1], Double.NaN, n03[0], n03[1]);
+        check("a one-way street is respected", oneWay.error == null && oneWay.meters > 450 && oneWay.meters < 560);
+        double midLat = 42.0025, midLon = -72.998;
+        Router.Result facingNorth = router.route(midLat, midLon, 0, n31[0], n31[1]);
+        Router.Result facingSouth = router.route(midLat, midLon, 180, n31[0], n31[1]);
+        check("heading picks the side of a two-way road", facingNorth.error == null && facingSouth.error == null
+                && facingNorth.meters < 200 && facingSouth.meters > facingNorth.meters + 100);
+        Router.Result nowhere = router.route(43.0, -72.0, Double.NaN, n31[0], n31[1]);
+        check("no road near the start is reported", "No road near the start".equals(nowhere.error));
+        check("a route to the same place is tiny", router.route(n01[0], n01[1], Double.NaN, n01[0], n01[1]).meters < 5
+                || router.route(n01[0], n01[1], Double.NaN, n01[0], n01[1]).error != null);
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }

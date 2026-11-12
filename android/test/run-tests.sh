@@ -7,5 +7,6 @@ rm -rf "$out"
 mkdir -p "$out"
 javac -d "$out" src/com/andrew/insighthud/ObdProtocol.java src/com/andrew/insighthud/SimulatedElm.java \
     src/com/andrew/insighthud/AutoBrightness.java src/com/andrew/insighthud/Alerts.java src/com/andrew/insighthud/AutoStopTracker.java src/com/andrew/insighthud/SoundPolicy.java src/com/andrew/insighthud/SpeedSource.java src/com/andrew/insighthud/EcuSearch.java src/com/andrew/insighthud/RoadLookup.java src/com/andrew/insighthud/Polyline.java src/com/andrew/insighthud/RouteTrack.java \
-    test/com/andrew/insighthud/ObdTests.java
+    src/com/andrew/insighthud/RouteTile.java src/com/andrew/insighthud/Router.java \
+    test/com/andrew/insighthud/RouterTestData.java test/com/andrew/insighthud/ObdTests.java
 java -cp "$out" com.andrew.insighthud.ObdTests
