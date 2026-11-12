@@ -89,6 +89,13 @@ public final class HudActivity extends Activity {
     private boolean navEnabled = true;
     private long navArrivedAt;
     private boolean offRouteAnnounced;
+    private RouteDatabase routeDb;
+    private boolean routeDbTried;
+    private final java.util.concurrent.ExecutorService routing = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private volatile boolean routingBusy;
+    private double[] navGoal;          // {lat, lon} of a destination the HUD routed to itself, for rerouting
+    private String navGoalName = "";
+    private long lastRerouteAt;
 
     private String navToken() {
         String token = preferences.getString("navToken", null);
@@ -140,7 +147,11 @@ public final class HudActivity extends Activity {
             }
 
             @Override public String destination(JSONObject body) {
-                return "Routing on the HUD is not installed yet; send a finished route to /route";
+                double lat = body.optDouble("lat", Double.NaN), lon = body.optDouble("lon", Double.NaN);
+                if (Double.isNaN(lat) || Double.isNaN(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+                    return "A destination needs lat and lon";
+                }
+                return routeTo(lat, lon, body.optString("name", ""), false);
             }
 
             @Override public void cancel() {
@@ -150,7 +161,60 @@ public final class HudActivity extends Activity {
         navServer.start();
     }
 
+    /** The routing graph, opened on first use; null when no hud-route.db has been copied to the phone. */
+    private synchronized RouteDatabase routeDatabase() {
+        if (routeDb == null && !routeDbTried) {
+            routeDbTried = true;
+            java.io.File external = getExternalFilesDir(null);
+            if (external != null) routeDb = RouteDatabase.open(new java.io.File(external, "hud-route.db"));
+        }
+        return routeDb;
+    }
+
+    /**
+     * Works out a route from where the car is to a place, on a background thread. Returns a message when it cannot
+     * even start (no graph, no GPS fix, already busy); otherwise null and the result arrives as the route itself.
+     */
+    private String routeTo(double lat, double lon, String name, boolean reroute) {
+        RouteDatabase graph = routeDatabase();
+        if (graph == null) return "No routing data on the HUD (hud-route.db)";
+        Location from = gpsFix;
+        if (from == null) return "No GPS fix yet";
+        if (routingBusy) return "Already working out a route";
+        routingBusy = true;
+        double heading = from.hasBearing() && from.hasSpeed() && from.getSpeed() > 2.5 ? from.getBearing() : Double.NaN;
+        double fromLat = from.getLatitude(), fromLon = from.getLongitude();
+        routing.execute(() -> {
+            Router.Result result;
+            try {
+                result = new Router(graph).route(fromLat, fromLon, heading, lat, lon);
+            } catch (RuntimeException | OutOfMemoryError broken) {
+                result = new Router.Result();
+                result.error = "Routing failed";
+                android.util.Log.w("HudRoute", "Routing failed", broken);
+            }
+            Router.Result done = result;
+            main.post(() -> {
+                routingBusy = false;
+                if (done.error != null) {
+                    raiseAlert(done.error.toUpperCase(Locale.US), Alerts.WARN);
+                    return;
+                }
+                RouteTrack track = new RouteTrack(name, done.lat, done.lon, done.steps, done.seconds);
+                startRoute(track, !reroute);
+                navGoal = new double[]{lat, lon};
+                navGoalName = name;
+            });
+        });
+        return null;
+    }
+
     private void startRoute(RouteTrack track) {
+        navGoal = null;
+        startRoute(track, true);
+    }
+
+    private void startRoute(RouteTrack track, boolean announce) {
         nav = track;
         navVersion++;
         navTileX = new double[track.lat.length];
@@ -162,7 +226,7 @@ public final class HudActivity extends Activity {
         navArrivedAt = 0;
         offRouteAnnounced = false;
         String name = track.name.isEmpty() ? "DESTINATION" : track.name.toUpperCase(Locale.US);
-        raiseAlert("ROUTE TO " + (name.length() > 24 ? name.substring(0, 24) : name), Alerts.INFO);
+        raiseAlert(announce ? "ROUTE TO " + (name.length() > 24 ? name.substring(0, 24) : name) : "NEW ROUTE", Alerts.INFO);
         updateMap();
         if (gpsFix != null) navUpdate(gpsFix);
         hud.invalidate();
@@ -170,6 +234,7 @@ public final class HudActivity extends Activity {
 
     private void cancelRoute() {
         nav = null;
+        navGoal = null;
         navArrivedAt = 0;
         updateMap();
         hud.invalidate();
@@ -192,7 +257,11 @@ public final class HudActivity extends Activity {
         } else if (route.offRoute(now)) {
             if (!offRouteAnnounced) {
                 offRouteAnnounced = true;
-                raiseAlert("OFF ROUTE", Alerts.WARN);
+                raiseAlert(navGoal != null ? "REROUTING" : "OFF ROUTE", Alerts.WARN);
+            }
+            if (navGoal != null && !routingBusy && now - lastRerouteAt > 8000) {
+                lastRerouteAt = now;
+                routeTo(navGoal[0], navGoal[1], navGoalName, true);
             }
         } else {
             offRouteAnnounced = false;
@@ -568,6 +637,8 @@ public final class HudActivity extends Activity {
         roadMap.close();
         if (driveLog != null) driveLog.close();
         if (navServer != null) navServer.stop();
+        routing.shutdownNow();
+        if (routeDb != null) routeDb.close();
         unregisterReceiver(batteryReceiver);
         super.onDestroy();
     }
