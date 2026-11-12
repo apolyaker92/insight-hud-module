@@ -32,6 +32,12 @@ With a detailed map pack installed the HUD shows, from the GPS fix alone: the po
 
 The limits, names, signals, cameras and the rest come from OpenStreetMap, so they are only as good as its volunteers' tagging; many rural roads have no limit, and a camera or crossing that nobody mapped will not warn.
 
+## Navigation (route follower)
+
+The HUD can follow a route that a phone sends it over Wi-Fi. BT SETUP > Navigation shows the HUD's address and a pairing code. POST a route to `http://ADDRESS:8765/route` with the code in an `X-HUD-Token` header (or `?token=CODE`); GET `/status` to check, POST `/cancel` to stop. The body is either the HUD's own JSON (`name`, `duration_s`, `polyline` + `polyline_precision` or `points`, `steps` with `instruction`/`street`/`type`/`modifier` and `at_m` or `location`) or an OSRM-style reply forwarded as received (add `?precision=6` when it was asked for with `geometries=polyline6`). The route is drawn over the map, and a strip shows the next turn's arrow, the distance, the instruction, the miles left and the arrival time; an OFF ROUTE banner appears after about 4 seconds more than 45 m from the line, and ARRIVED near the end. Turning a route into guidance happens on the HUD, so the phone only has to supply the line and steps.
+
+Android's per-app firewall must allow the HUD network access (Settings > Apps > Insight HUD > Wi-Fi data usage > Allow network access), and the HUD must be the foreground app to receive routes. The receiver listens on every network interface, so keep it on a network you trust; the pairing code is the only protection.
+
 ## Offline road data
 
 The included Albany road database and optional East Coast road pack are derived from [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright) and available under the [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/). The bundled Albany fallback covers 42.49°–42.85° N and 74.03°–73.49° W.

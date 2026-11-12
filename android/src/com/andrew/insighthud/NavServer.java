@@ -65,6 +65,7 @@ final class NavServer {
                 Log.i(TAG, "Listening on " + port);
                 while (running) {
                     Socket client = socket.accept();
+                    Log.i(TAG, "Connection from " + client.getRemoteSocketAddress());
                     workers.execute(() -> serve(client));
                 }
             } catch (IOException stopped) {
@@ -94,6 +95,7 @@ final class NavServer {
 
     private void serve(Socket client) {
         try (Socket socket = client) {
+            Log.i(TAG, "Serving a request");
             socket.setSoTimeout(6000);
             InputStream in = socket.getInputStream();
             ByteArrayOutputStream head = new ByteArrayOutputStream();
