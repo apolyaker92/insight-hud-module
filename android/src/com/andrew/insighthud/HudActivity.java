@@ -356,6 +356,11 @@ public final class HudActivity extends Activity {
                 if (update != null) main.postDelayed(staleReadings, 6000);
                 hud.invalidate();
             });
+            // With the car on and Bluetooth still off, ask for it again (the earlier request can be lost if it
+            // arrives while Bluetooth is still switching off from the last parking).
+            obd.whenBluetoothOff = () -> {
+                if (accessoryActive && !parkedBlank) setBluetoothPower(true);
+            };
         }
         Intent battery = registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         if (battery != null) {
@@ -801,6 +806,7 @@ public final class HudActivity extends Activity {
         try {
             if (bluetooth.isEnabled() == on) return;
             boolean done = on ? bluetooth.enable() : bluetooth.disable();
+            if (on && obd != null) obd.expectBluetooth(10_000);
             Log.i("HudBt", (on ? "enable" : "disable") + " requested, accepted=" + done);
         } catch (SecurityException refused) {
             Log.i("HudBt", "not allowed to switch Bluetooth (not a privileged app)");

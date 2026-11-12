@@ -96,6 +96,17 @@ final class ObdBluetooth {
         this.listener = listener;
     }
 
+    /** Bluetooth is being switched on by the HUD itself: until this time, off means "starting", not "off". */
+    private volatile long expectedUntil;
+    private long lastNudgeAt;
+    /** Called on the main thread when Bluetooth is off and not already starting, so the owner can switch it on. */
+    volatile Runnable whenBluetoothOff;
+
+    void expectBluetooth(long milliseconds) {
+        expectedUntil = SystemClock.elapsedRealtime() + milliseconds;
+        lastNudgeAt = SystemClock.elapsedRealtime(); // the request just made gets a few seconds before a retry
+    }
+
     void start(String address) {
         stop();
         Session session = new Session(address);
@@ -151,8 +162,16 @@ final class ObdBluetooth {
             try {
                 boolean simulated = SimulatedElm.ADDRESS.equals(session.address);
                 if (!simulated && !adapter.isEnabled()) {
-                    publish(session, "BLUETOOTH OFF", null);
-                    Thread.sleep(1000);
+                    long now = SystemClock.elapsedRealtime();
+                    boolean turningOn = adapter.getState() == BluetoothAdapter.STATE_TURNING_ON;
+                    if (!turningOn && now - lastNudgeAt >= 3000) {
+                        lastNudgeAt = now; // a request made while it was still switching off can be dropped
+                        Runnable nudge = whenBluetoothOff;
+                        if (nudge != null) main.post(nudge);
+                    }
+                    // Right after ignition the HUD has just asked for Bluetooth: say so rather than "off".
+                    publish(session, turningOn || now < expectedUntil ? "BT STARTING" : "BLUETOOTH OFF", null);
+                    Thread.sleep(turningOn || now < expectedUntil ? 400 : 1000);
                     continue;
                 }
                 if (simulated) {
