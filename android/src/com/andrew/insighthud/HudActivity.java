@@ -69,7 +69,9 @@ public final class HudActivity extends Activity {
     private boolean demo;
     private boolean mapPreview;
     private boolean fullMap;
-    private boolean mapReadout = true; // speed, limit and road plate over the full-screen map
+    /** The plate over the full-screen map: 0 everything, 1 just road, speed and limit, 2 none. */
+    private int mapReadout;
+    private static final String[] READOUT_NAMES = {"FULL", "SPEED", "OFF"};
     private boolean roadInfoOn;
     private OfflineRoadMap.RoadInfo roadInfo;
     private long lastLookupAt;
@@ -331,7 +333,10 @@ public final class HudActivity extends Activity {
         applyOrientation();
         mapPreview = preferences.getBoolean("mapPreview", false);
         fullMap = preferences.getBoolean("fullMap", false);
-        mapReadout = preferences.getBoolean("mapReadout", true);
+        // Older versions stored this as a yes/no; no meant none.
+        mapReadout = preferences.contains("mapReadoutMode") ? preferences.getInt("mapReadoutMode", 0)
+                : preferences.getBoolean("mapReadout", true) ? 0 : 2;
+        mapReadout = Math.max(0, Math.min(READOUT_NAMES.length - 1, mapReadout));
         roadInfoOn = preferences.getBoolean("roadInfo", true);
         headingUp = preferences.getBoolean("headingUp", false);
         mapRange = Math.max(0, Math.min(RANGE_NAMES.length - 1, preferences.getInt("mapRange", 0)));
@@ -1110,10 +1115,10 @@ public final class HudActivity extends Activity {
         actions.add(() -> activateControl(4));
         labels.add("Brightness: " + BRIGHTNESS_NAMES[brightnessMode]);
         actions.add(() -> activateControl(2));
-        labels.add("Full map readout (speed, limit, road): " + (mapReadout ? "ON" : "OFF"));
+        labels.add("Full map readout: " + READOUT_NAMES[mapReadout]);
         actions.add(() -> {
-            mapReadout = !mapReadout;
-            preferences.edit().putBoolean("mapReadout", mapReadout).apply();
+            mapReadout = (mapReadout + 1) % READOUT_NAMES.length;
+            preferences.edit().putInt("mapReadoutMode", mapReadout).apply();
             hud.invalidate();
         });
         labels.add("Colors: " + (preferences.getInt("palette", 0) == 0 ? "GREEN" : "AMBER"));
@@ -1737,7 +1742,7 @@ public final class HudActivity extends Activity {
                 drawMetrics(canvas, displayed);
             }
             if (full) {
-                if (mapReadout) drawMapReadouts(canvas, displayed, speed, speedFromGps);
+                if (mapReadout != 2) drawMapReadouts(canvas, displayed, speed, speedFromGps, mapReadout == 1);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(ground(0xF0));
                 canvas.drawRect(MAP_RANGE_LEFT - 3, 95, MAP_RIGHT + 1, 125, paint);
@@ -2035,27 +2040,37 @@ public final class HudActivity extends Activity {
         }
 
         /** Speed and rpm over the corner of a full-screen map, on a dark plate so the roads never fight the digits. */
-        private void drawMapReadouts(Canvas canvas, ObdBluetooth.Readings displayed, String speed, boolean fromGps) {
+        /**
+         * The plate over the map's corner. Compact keeps only what a driver reads at a glance: the road, the speed,
+         * the limit, and a warning when something is ahead; the full plate adds rpm and the nearest fuel.
+         */
+        private void drawMapReadouts(Canvas canvas, ObdBluetooth.Readings displayed, String speed, boolean fromGps,
+                                     boolean compact) {
             OfflineRoadMap.RoadInfo info = shownRoadInfo();
-            float plateLeft = mapLeft() + 1;
-            float plateRight = plateLeft + (info != null ? 440 : 330);
-            float plateBottom = mapBottom() - 1;
             String ahead = aheadLine(info);
-            float plateTop = plateBottom - (info != null ? (ahead != null ? 166 : 142) : 128);
+            float plateLeft = mapLeft() + 1;
+            float plateRight = plateLeft + (compact ? 420 : info != null ? 440 : 330);
+            float plateBottom = mapBottom() - 1;
+            float height = compact ? (ahead != null ? 150 : 118) : info != null ? (ahead != null ? 166 : 142) : 128;
+            float plateTop = plateBottom - height;
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(BACKGROUND);
             canvas.drawRect(plateLeft, plateTop, plateRight, plateBottom, paint);
             line(canvas, plateLeft, plateTop, plateRight, plateTop, LINE);
             line(canvas, plateRight, plateTop, plateRight, plateBottom, LINE);
-            float base = plateBottom - (info != null ? (ahead != null ? 68 : 44) : 34);
+            float base = plateBottom - (compact ? (ahead != null ? 44 : 16) : info != null ? (ahead != null ? 68 : 44) : 34);
             text(canvas, speed, plateLeft + 196, base, 84, ACCENT, true, Paint.Align.RIGHT);
             text(canvas, fromGps ? "MPH GPS" : "MPH", plateLeft + 210, base - 2, 22, ACCENT, false);
-            text(canvas, wholeReading(displayed.rpm, "----") + " RPM", plateLeft + 210, base - 30, 18, MUTED, false);
+            if (!compact) {
+                text(canvas, wholeReading(displayed.rpm, "----") + " RPM", plateLeft + 210, base - 30, 18, MUTED, false);
+            }
             if (info != null) {
-                text(canvas, roadLine(info, 42), plateLeft + 12, plateTop + 24, 15, MUTED, false);
-                drawLimitBadge(canvas, plateRight - 112, plateTop + 36, 100, 82, info.limitMph, displayed.speedMph);
-                if (info.fuelName != null) text(canvas, fuelLine(info), plateLeft + 12, plateBottom - 10, 12, MUTED, false);
-                if (ahead != null) text(canvas, ahead, plateLeft + 12, plateBottom - 34, 20, ACCENT, true);
+                text(canvas, roadLine(info, compact ? 38 : 42), plateLeft + 12, plateTop + 24, compact ? 18 : 15, MUTED, false);
+                drawLimitBadge(canvas, plateRight - 112, plateTop + 34, 100, 76, info.limitMph, displayed.speedMph);
+                if (!compact && info.fuelName != null) {
+                    text(canvas, fuelLine(info), plateLeft + 12, plateBottom - 10, 12, MUTED, false);
+                }
+                if (ahead != null) text(canvas, ahead, plateLeft + 12, plateBottom - (compact ? 12 : 34), 20, ACCENT, true);
             }
         }
 
