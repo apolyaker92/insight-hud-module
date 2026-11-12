@@ -79,6 +79,158 @@ public final class HudActivity extends Activity {
     private double lastLookupLat, lastLookupLon;
     private long overSince, lastOverAlertAt;
     private DriveLog driveLog;
+
+    // Navigation: a route handed over by a phone (or, later, worked out here) that the HUD follows.
+    private static final int NAV_PORT = 8765;
+    private RouteTrack nav;
+    private double[] navTileX, navTileY;
+    private int navVersion;
+    private NavServer navServer;
+    private boolean navEnabled = true;
+    private long navArrivedAt;
+    private boolean offRouteAnnounced;
+
+    private String navToken() {
+        String token = preferences.getString("navToken", null);
+        if (token == null) token = newNavToken();
+        return token;
+    }
+
+    private String newNavToken() {
+        byte[] bytes = new byte[4];
+        new java.security.SecureRandom().nextBytes(bytes);
+        StringBuilder token = new StringBuilder();
+        for (byte b : bytes) token.append(String.format(Locale.US, "%02x", b & 0xff));
+        preferences.edit().putString("navToken", token.toString()).apply();
+        return token.toString();
+    }
+
+    private void startNavServer() {
+        if (!navEnabled || navServer != null) return;
+        navServer = new NavServer(NAV_PORT, this::navToken, new NavServer.Handler() {
+            @Override public String status() {
+                JSONObject json = new JSONObject();
+                try {
+                    RouteTrack route = nav;
+                    json.put("app", "insight-hud").put("navigating", route != null);
+                    if (route != null) {
+                        RouteTrack.Step next = route.nextStep();
+                        json.put("destination", route.name).put("remaining_m", Math.round(route.remainingMeters()))
+                                .put("next", next == null ? "ARRIVE" : next.label())
+                                .put("next_m", Math.round(route.metersToNext()))
+                                .put("off_route", route.offRoute(SystemClock.uptimeMillis()))
+                                .put("arrived", route.arrived());
+                    }
+                    json.put("gps_fix", gpsFix != null);
+                } catch (JSONException impossible) {
+                    // Only a null key could throw here.
+                }
+                return json.toString();
+            }
+
+            @Override public String route(JSONObject body, int precision) {
+                RouteTrack track;
+                try {
+                    track = RouteParser.parse(body, precision, "DESTINATION");
+                } catch (IllegalArgumentException bad) {
+                    return bad.getMessage();
+                }
+                main.post(() -> startRoute(track));
+                return null;
+            }
+
+            @Override public String destination(JSONObject body) {
+                return "Routing on the HUD is not installed yet; send a finished route to /route";
+            }
+
+            @Override public void cancel() {
+                main.post(HudActivity.this::cancelRoute);
+            }
+        });
+        navServer.start();
+    }
+
+    private void startRoute(RouteTrack track) {
+        nav = track;
+        navVersion++;
+        navTileX = new double[track.lat.length];
+        navTileY = new double[track.lat.length];
+        for (int i = 0; i < track.lat.length; i++) {
+            navTileX[i] = OfflineRoadMap.tileX(track.lon[i]);
+            navTileY[i] = OfflineRoadMap.tileY(track.lat[i]);
+        }
+        navArrivedAt = 0;
+        offRouteAnnounced = false;
+        String name = track.name.isEmpty() ? "DESTINATION" : track.name.toUpperCase(Locale.US);
+        raiseAlert("ROUTE TO " + (name.length() > 24 ? name.substring(0, 24) : name), Alerts.INFO);
+        updateMap();
+        if (gpsFix != null) navUpdate(gpsFix);
+        hud.invalidate();
+    }
+
+    private void cancelRoute() {
+        nav = null;
+        navArrivedAt = 0;
+        updateMap();
+        hud.invalidate();
+    }
+
+    /** Moves the car along the route on each GPS fix and raises the arrival and off-route banners. */
+    private void navUpdate(Location fix) {
+        RouteTrack route = nav;
+        if (route == null) return;
+        long now = SystemClock.uptimeMillis();
+        route.update(fix.getLatitude(), fix.getLongitude(), now);
+        if (route.arrived()) {
+            if (navArrivedAt == 0) {
+                navArrivedAt = now;
+                raiseAlert("ARRIVED", Alerts.INFO);
+                main.postDelayed(() -> {
+                    if (nav == route) cancelRoute();
+                }, 20_000);
+            }
+        } else if (route.offRoute(now)) {
+            if (!offRouteAnnounced) {
+                offRouteAnnounced = true;
+                raiseAlert("OFF ROUTE", Alerts.WARN);
+            }
+        } else {
+            offRouteAnnounced = false;
+        }
+    }
+
+    /** The addresses the HUD can be reached on, one per line, for the pairing screen. */
+    private String navAddresses() {
+        StringBuilder out = new StringBuilder();
+        try {
+            for (java.net.NetworkInterface face : java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())) {
+                if (!face.isUp() || face.isLoopback()) continue;
+                for (java.net.InetAddress address : java.util.Collections.list(face.getInetAddresses())) {
+                    if (address instanceof java.net.Inet4Address) {
+                        out.append("http://").append(address.getHostAddress()).append(':').append(NAV_PORT)
+                                .append("   (").append(face.getName()).append(")\n");
+                    }
+                }
+            }
+        } catch (java.net.SocketException none) {
+            // Report no address below.
+        }
+        return out.length() == 0 ? "No network address yet: join a Wi-Fi network or turn the hotspot on.\n"
+                : out.toString();
+    }
+
+    private void showNavPairing() {
+        new AlertDialog.Builder(this)
+                .setTitle("SEND ROUTES TO THE HUD")
+                .setMessage("Address:\n" + navAddresses() + "\nPairing code: " + navToken()
+                        + "\n\nSend it in an X-HUD-Token header, or add ?token=" + navToken() + " to the address."
+                        + "\n\nPOST /route with a route, POST /cancel to stop, GET /status to check.")
+                .setPositiveButton("OK", null)
+                .setNegativeButton("NEW CODE", (dialog, which) -> {
+                    newNavToken();
+                    showNavPairing();
+                }).show();
+    }
     private Location previousFix;
     private float derivedSpeedMps = Float.NaN;
     /** Repaints on the minute so the header clock stays right without any other redraw. */
@@ -252,6 +404,7 @@ public final class HudActivity extends Activity {
             main.postDelayed(expireGpsFix, GPS_STALE_MS - Math.max(0, age));
             refreshMapTiles();
             lookupRoadInfo(location);
+            navUpdate(location);
             hud.invalidate();
         }
 
@@ -347,6 +500,8 @@ public final class HudActivity extends Activity {
         hud = new HudView(this);
         setContentView(hud);
         locationManager = getSystemService(LocationManager.class);
+        navEnabled = preferences.getBoolean("navEnabled", true);
+        startNavServer();
         roadMap = new OfflineRoadMap(this, () -> {
             refreshMapTiles();
             hud.invalidate();
@@ -412,6 +567,7 @@ public final class HudActivity extends Activity {
         switchSounds = null;
         roadMap.close();
         if (driveLog != null) driveLog.close();
+        if (navServer != null) navServer.stop();
         unregisterReceiver(batteryReceiver);
         super.onDestroy();
     }
@@ -854,7 +1010,7 @@ public final class HudActivity extends Activity {
 
     private void updateMap() {
         boolean liveMap = foreground && mapPreview && !demo && thermalLevel == THERMAL_NORMAL;
-        boolean wantInfo = foreground && roadInfoOn && !demo && thermalLevel == THERMAL_NORMAL;
+        boolean wantInfo = foreground && (roadInfoOn || nav != null) && !demo && thermalLevel == THERMAL_NORMAL;
         if (gpsTestActive && (!liveMap || accessoryActive)) setGpsTest(false);
         if (liveMap || wantInfo) roadMap.open();
         if (liveMap) refreshMapTiles();
@@ -1140,6 +1296,12 @@ public final class HudActivity extends Activity {
             updateMap();
             hud.invalidate();
         });
+        labels.add("Navigation: send routes to the HUD");
+        actions.add(this::showNavPairing);
+        if (nav != null) {
+            labels.add("Cancel route to " + (nav.name.isEmpty() ? "destination" : nav.name));
+            actions.add(this::cancelRoute);
+        }
         labels.add("Sound: " + SoundPolicy.MODE_NAMES[sounds.mode]);
         actions.add(this::cycleSoundMode);
         labels.add("Volume: " + Math.round(SoundPolicy.LEVELS[sounds.level] * 100) + "%");
@@ -1750,6 +1912,7 @@ public final class HudActivity extends Activity {
             } else {
                 drawMetrics(canvas, displayed);
             }
+            if (mapPreview && !demo && thermalLevel == THERMAL_NORMAL && nav != null) drawNavStrip(canvas);
             if (full) {
                 if (mapReadout != 2) drawMapReadouts(canvas, displayed, speed, speedFromGps, mapReadout == 1);
                 paint.setStyle(Paint.Style.FILL);
@@ -1777,7 +1940,9 @@ public final class HudActivity extends Activity {
                     text(canvas, fuelLine(fuelInfo), 640, footer + 30, 14, MUTED, false, Paint.Align.CENTER);
                 }
                 String ahead = aheadLine(shownRoadInfo());
+                String guidance = !mapPreview ? navFooter() : null;
                 if (ahead != null) text(canvas, ahead, 60, footer + 32, 20, ACCENT, true);
+                else if (guidance != null) text(canvas, guidance, 60, footer + 32, 20, ACCENT, true);
                 else text(canvas, "ZE1 / MODULE 2.3", 60, footer + 30, 15, ACCENT, false);
                 text(canvas, brightText, 640, footer + 56, 12, MUTED, false, Paint.Align.CENTER);
                 text(canvas, "BT / " + adapterName.toUpperCase(Locale.US), 60, footer + 56, 12, MUTED, false);
@@ -2005,6 +2170,7 @@ public final class HudActivity extends Activity {
             paint.setColor(ACCENT);
             paint.setStrokeWidth(3.1f / strokeScale);
             canvas.drawPath(scene.roads[2], paint);
+            if (nav != null) drawRouteOverlay(canvas, scene, strokeScale);
             paint.setStrokeCap(Paint.Cap.BUTT);
             paint.setStyle(Paint.Style.FILL);
             canvas.restore();
@@ -2094,6 +2260,162 @@ public final class HudActivity extends Activity {
             if (demo) return "NE 045\u00b0";
             if (gpsFix == null || Float.isNaN(gpsCourse)) return null;
             return RoadLookup.compass(gpsCourse) + String.format(Locale.US, " %03d\u00b0", Math.round(gpsCourse) % 360);
+        }
+
+        private int routeKey = Integer.MIN_VALUE;
+        private final Path routePath = new Path();
+
+        /** The route as a heavy line over the roads, and a ring at the destination. */
+        private void drawRouteOverlay(Canvas canvas, OfflineRoadMap.Scene scene, float strokeScale) {
+            int key = (scene.x * 31 + scene.y) * 31 + navVersion;
+            if (key != routeKey) {
+                routeKey = key;
+                routePath.reset();
+                boolean pen = false;
+                for (int i = 0; i < navTileX.length; i++) {
+                    double dx = navTileX[i] - scene.x, dy = navTileY[i] - scene.y;
+                    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+                        pen = false;
+                        continue;
+                    }
+                    if (pen) routePath.lineTo((float) dx, (float) dy);
+                    else {
+                        routePath.moveTo((float) dx, (float) dy);
+                        pen = true;
+                    }
+                }
+            }
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            paint.setColor(BACKGROUND);
+            paint.setStrokeWidth(11f / strokeScale);
+            canvas.drawPath(routePath, paint);
+            paint.setColor(ACCENT);
+            paint.setStrokeWidth(6.5f / strokeScale);
+            canvas.drawPath(routePath, paint);
+            paint.setStrokeJoin(Paint.Join.MITER);
+            int last = navTileX.length - 1;
+            float dx = (float) (navTileX[last] - scene.x), dy = (float) (navTileY[last] - scene.y);
+            if (Math.abs(dx) <= 4 && Math.abs(dy) <= 4) {
+                paint.setColor(BACKGROUND);
+                paint.setStrokeWidth(12f / strokeScale);
+                canvas.drawCircle(dx, dy, 17f / strokeScale, paint);
+                paint.setColor(ACCENT);
+                paint.setStrokeWidth(5f / strokeScale);
+                canvas.drawCircle(dx, dy, 17f / strokeScale, paint);
+            }
+        }
+
+        private String navDistance(double meters) {
+            double feet = meters * 3.28084;
+            if (feet < 1000) return Math.max(50, Math.round(feet / 50) * 50) + " FT";
+            return String.format(Locale.US, "%.1f MI", meters / 1609.344);
+        }
+
+        /** "TURN LEFT ONTO MAIN ST" plus how far, for the gauges view's footer. */
+        private String navFooter() {
+            RouteTrack route = nav;
+            if (route == null) return null;
+            RouteTrack.Step next = route.nextStep();
+            String what = next == null ? "ARRIVE" : next.label();
+            if (what.length() > 30) what = what.substring(0, 30);
+            return navDistance(route.metersToNext()) + "  " + what;
+        }
+
+        /** The turn strip over the map: arrow, distance to the next manoeuvre, what to do, and the way left. */
+        private void drawNavStrip(Canvas canvas) {
+            RouteTrack route = nav;
+            float left = mapLeft() + 8, top = mapTop() + 8;
+            float width = fullMapActive() ? 540 : 440, height = 108;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(ground(0xF5));
+            canvas.drawRect(left, top, left + width, top + height, paint);
+            border(canvas, left, top, left + width, top + height);
+            RouteTrack.Step next = route.nextStep();
+            drawTurnArrow(canvas, left + 56, top + 56, next == null ? RouteTrack.ARRIVE : next.kind);
+            text(canvas, navDistance(route.metersToNext()), left + 112, top + 50, 42, ACCENT, true);
+            String what = next == null ? "ARRIVE" + (route.name.isEmpty() ? "" : " AT " + route.name.toUpperCase(Locale.US))
+                    : next.label();
+            int room = (int) ((width - 124) / 10);
+            text(canvas, what.length() > room ? what.substring(0, room) : what, left + 112, top + 76, 17, MUTED, false);
+            double seconds = route.remainingSeconds();
+            String left2 = String.format(Locale.US, "%.1f MI", route.remainingMeters() / 1609.344);
+            if (!Double.isNaN(seconds)) {
+                String pattern = android.text.format.DateFormat.is24HourFormat(HudActivity.this) ? "HH:mm" : "h:mm a";
+                left2 += "   " + Math.max(1, Math.round(seconds / 60)) + " MIN   ETA "
+                        + new SimpleDateFormat(pattern, Locale.US).format(new Date(System.currentTimeMillis() + (long) (seconds * 1000)));
+            }
+            text(canvas, left2, left + 112, top + 98, 14, MUTED, false);
+        }
+
+        /** A bent arrow for a turn, a ring for a roundabout, a U for a U-turn, a target for arriving. */
+        private void drawTurnArrow(Canvas canvas, float cx, float cy, int kind) {
+            canvas.save();
+            canvas.translate(cx, cy);
+            paint.setColor(ACCENT);
+            switch (kind) {
+                case RouteTrack.ARRIVE:
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeWidth(6);
+                    canvas.drawCircle(0, 0, 22, paint);
+                    paint.setStyle(Paint.Style.FILL);
+                    canvas.drawCircle(0, 0, 9, paint);
+                    break;
+                case RouteTrack.ROUNDABOUT:
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeWidth(6);
+                    canvas.drawCircle(0, 8, 18, paint);
+                    paint.setStyle(Paint.Style.FILL);
+                    path.reset();
+                    path.moveTo(0, -34);
+                    path.lineTo(-12, -16);
+                    path.lineTo(12, -16);
+                    path.close();
+                    canvas.drawPath(path, paint);
+                    break;
+                case RouteTrack.UTURN:
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeWidth(9);
+                    path.reset();
+                    path.moveTo(14, 34);
+                    path.lineTo(14, -6);
+                    path.arcTo(new RectF(-14, -34, 14, -6), 0, -180);
+                    path.lineTo(-14, 8);
+                    canvas.drawPath(path, paint);
+                    paint.setStyle(Paint.Style.FILL);
+                    path.reset();
+                    path.moveTo(-14, 34);
+                    path.lineTo(-27, 12);
+                    path.lineTo(-1, 12);
+                    path.close();
+                    canvas.drawPath(path, paint);
+                    break;
+                default: {
+                    float angle;
+                    switch (kind) {
+                        case RouteTrack.SLIGHT_RIGHT: angle = 35; break;
+                        case RouteTrack.RIGHT: angle = 90; break;
+                        case RouteTrack.SHARP_RIGHT: angle = 135; break;
+                        case RouteTrack.SHARP_LEFT: angle = -135; break;
+                        case RouteTrack.LEFT: angle = -90; break;
+                        case RouteTrack.SLIGHT_LEFT: angle = -35; break;
+                        default: angle = 0; break;
+                    }
+                    paint.setStyle(Paint.Style.FILL);
+                    canvas.drawRect(-5, 2, 5, 36, paint);
+                    canvas.rotate(angle, 0, 0);
+                    canvas.drawRect(-5, -26, 5, 5, paint);
+                    path.reset();
+                    path.moveTo(-17, -26);
+                    path.lineTo(17, -26);
+                    path.lineTo(0, -48);
+                    path.close();
+                    canvas.drawPath(path, paint);
+                    break;
+                }
+            }
+            canvas.restore();
         }
 
         private String roadLine(OfflineRoadMap.RoadInfo info, int max) {

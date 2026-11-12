@@ -22,6 +22,28 @@ public final class ObdTests {
         return bytes;
     }
 
+    private static final double TEST_LAT = 42.6, TEST_LON = -73.8;
+
+    /** Lat/lon for a point this many metres east and north of the test origin. */
+    private static double[] at(double east, double north) {
+        return new double[]{TEST_LAT + north / 110_574, TEST_LON + east / (111_320 * Math.cos(Math.toRadians(TEST_LAT)))};
+    }
+
+    /** East 400 m, then north 400 m, a point every 20 m: a single left turn at 400 m. */
+    private static RouteTrack lRoute(java.util.List<RouteTrack.StepSpec> specs, double seconds) {
+        java.util.List<double[]> points = new java.util.ArrayList<>();
+        for (int e = 0; e <= 400; e += 20) points.add(at(e, 0));
+        for (int n = 20; n <= 400; n += 20) points.add(at(400, n));
+        double[] lat = new double[points.size()], lon = new double[points.size()];
+        for (int i = 0; i < lat.length; i++) { lat[i] = points.get(i)[0]; lon[i] = points.get(i)[1]; }
+        return new RouteTrack("Test Place", lat, lon, specs, seconds);
+    }
+
+    private static void move(RouteTrack route, double east, double north, long now) {
+        double[] p = at(east, north);
+        route.update(p[0], p[1], now);
+    }
+
     private static void check(String name, boolean condition) {
         System.out.println((condition ? "PASS  " : "FAIL  ") + name);
         if (!condition) failures++;
@@ -277,6 +299,66 @@ public final class ObdTests {
                 RoadLookup.aheadEligible(RoadLookup.CURVE, "35", 100, 90, 90, 45)
                         && !RoadLookup.aheadEligible(RoadLookup.CURVE, "35", 100, 90, 90, 34)
                         && !RoadLookup.aheadEligible(RoadLookup.CURVE, "x", 100, 90, 90, 45));
+
+        // Route lines and following them.
+        double[][] decoded = Polyline.decode("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5);
+        check("a published polyline decodes to its three points", decoded[0].length == 3
+                && Math.abs(decoded[0][0] - 38.5) < 1e-9 && Math.abs(decoded[1][0] + 120.2) < 1e-9
+                && Math.abs(decoded[0][1] - 40.7) < 1e-9 && Math.abs(decoded[1][1] + 120.95) < 1e-9
+                && Math.abs(decoded[0][2] - 43.252) < 1e-9 && Math.abs(decoded[1][2] + 126.453) < 1e-9);
+        check("precision 6 scales the same data", Math.abs(Polyline.decode("_p~iF~ps|U", 6)[0][0] - 3.85) < 1e-9);
+        check("a bad polyline gives no points, not a crash", Polyline.decode("!!!", 5)[0].length == 0
+                && Polyline.decode(null, 5)[0].length == 0);
+
+        java.util.List<RouteTrack.StepSpec> specs = new java.util.ArrayList<>();
+        RouteTrack.StepSpec turn = new RouteTrack.StepSpec();
+        turn.street = "Main St";
+        turn.atMeters = 400;
+        specs.add(turn);
+        RouteTrack route = lRoute(specs, 120);
+        check("the route is 800 m long", Math.abs(route.lengthMeters - 800) < 8);
+        check("a left turn is read from the geometry", route.steps[0].kind == RouteTrack.LEFT);
+        check("an arrival is added at the end", route.steps[route.steps.length - 1].kind == RouteTrack.ARRIVE);
+        check("a step's label says what to do", "TURN LEFT ONTO MAIN ST".equals(route.steps[0].label()));
+        move(route, 100, 0, 1000);
+        check("100 m along: 700 m left, the turn 300 m ahead", Math.abs(route.remainingMeters() - 700) < 8
+                && Math.abs(route.metersToNext() - 300) < 8 && route.nextStep().kind == RouteTrack.LEFT);
+        check("seconds left scale with distance", Math.abs(route.remainingSeconds() - 105) < 2);
+        move(route, 395, 0, 2000);
+        check("just before the turn it is 5 m away", route.metersToNext() < 12 && route.nextStep() != null);
+        move(route, 400, 30, 3000);
+        check("after the turn only the arrival is left", route.nextStep() != null
+                && route.nextStep().kind == RouteTrack.ARRIVE
+                && Math.abs(route.metersToNext() - route.remainingMeters()) < 1e-6);
+        check("not off route while on it", !route.offRoute(3000) && route.offMeters() < 5);
+        move(route, 400, 390, 4000);
+        check("within 30 m of the end is arrival", route.arrived());
+
+        RouteTrack lost = lRoute(null, 0);
+        move(lost, 100, 0, 1000);
+        move(lost, 100, -80, 2000);
+        check("80 m off the line is measured", Math.abs(lost.offMeters() - 80) < 3);
+        check("off route is not declared at once", !lost.offRoute(3000));
+        check("but is after a few seconds", lost.offRoute(7000));
+        move(lost, 150, 2, 8000);
+        check("back on the line clears it", !lost.offRoute(8000) && Math.abs(lost.alongMeters() - 150) < 8);
+
+        RouteTrack manual = lRoute(null, 0);
+        RouteTrack.StepSpec given = new RouteTrack.StepSpec();
+        given.modifier = "right";
+        given.type = "turn";
+        given.instruction = "Turn right at the lights";
+        given.lat = at(400, 0)[0];
+        given.lon = at(400, 0)[1];
+        java.util.List<RouteTrack.StepSpec> givenList = new java.util.ArrayList<>();
+        givenList.add(given);
+        RouteTrack located = lRoute(givenList, 0);
+        check("a step given by position snaps onto the line", Math.abs(located.steps[0].atMeters - 400) < 8);
+        check("a stated modifier beats the geometry", located.steps[0].kind == RouteTrack.RIGHT);
+        check("a supplied instruction is shown in capitals", "TURN RIGHT AT THE LIGHTS".equals(located.steps[0].label()));
+        check("turn thresholds", RouteTrack.turnKind(5) == RouteTrack.STRAIGHT
+                && RouteTrack.turnKind(35) == RouteTrack.SLIGHT_RIGHT && RouteTrack.turnKind(-90) == RouteTrack.LEFT
+                && RouteTrack.turnKind(140) == RouteTrack.SHARP_RIGHT && RouteTrack.turnKind(-175) == RouteTrack.UTURN);
 
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
