@@ -36,6 +36,12 @@ The limits, names, signals, cameras and the rest come from OpenStreetMap, so the
 
 The HUD can follow a route that a phone sends it over Wi-Fi. BT SETUP > Navigation shows the HUD's address and a pairing code. POST a route to `http://ADDRESS:8765/route` with the code in an `X-HUD-Token` header (or `?token=CODE`); GET `/status` to check, POST `/cancel` to stop. The body is either the HUD's own JSON (`name`, `duration_s`, `polyline` + `polyline_precision` or `points`, `steps` with `instruction`/`street`/`type`/`modifier` and `at_m` or `location`) or an OSRM-style reply forwarded as received (add `?precision=6` when it was asked for with `geometries=polyline6`). The route is drawn over the map, and a strip shows the next turn's arrow, the distance, the instruction, the miles left and the arrival time; an OFF ROUTE banner appears after about 4 seconds more than 45 m from the line, and ARRIVED near the end. Turning a route into guidance happens on the HUD, so the phone only has to supply the line and steps.
 
+### Routing on the HUD (offline)
+
+`POST /destination` with `{"lat":..,"lon":..,"name":".."}` makes the HUD work out the route itself from its GPS fix, with no internet, using `hud-route.db` in the app's files folder (`/sdcard/Android/data/com.andrew.insighthud/files/`). It reroutes on its own (about 8 seconds after leaving the route) and shows REROUTING. A 25 km Albany trip is found in about a second.
+
+The graph comes from an OpenStreetMap extract: `python android/build_route_graph.py OUT.db SRC.pbf --name NAME --bounds S W N E` (needs `pyosmium` and `numpy`). Edges carry travel times from posted or default speeds plus signal and stop delays, one-ways, and turn restrictions; the router adds turn penalties. Short trips search every road; long ones only main roads away from either end. The tile format is documented at the top of `build_route_graph.py`; `android/test/make_router_tile.py` writes the small grid the router tests use.
+
 Android's per-app firewall must allow the HUD network access (Settings > Apps > Insight HUD > Wi-Fi data usage > Allow network access), and the HUD must be the foreground app to receive routes. The receiver listens on every network interface, so keep it on a network you trust; the pairing code is the only protection.
 
 ## Offline road data
