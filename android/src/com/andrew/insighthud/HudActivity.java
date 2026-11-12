@@ -72,6 +72,7 @@ public final class HudActivity extends Activity {
     /** The plate over the full-screen map: 0 everything, 1 just road, speed and limit, 2 none. */
     private int mapReadout;
     private static final String[] READOUT_NAMES = {"FULL", "SPEED", "OFF"};
+    private static final String[] PALETTE_NAMES = {"GREEN", "AMBER", "BLUE"};
     private boolean roadInfoOn;
     private OfflineRoadMap.RoadInfo roadInfo;
     private long lastLookupAt;
@@ -1121,9 +1122,10 @@ public final class HudActivity extends Activity {
             preferences.edit().putInt("mapReadoutMode", mapReadout).apply();
             hud.invalidate();
         });
-        labels.add("Colors: " + (preferences.getInt("palette", 0) == 0 ? "GREEN" : "AMBER"));
+        labels.add("Colors: " + PALETTE_NAMES[Math.max(0, Math.min(PALETTE_NAMES.length - 1,
+                preferences.getInt("palette", 0)))]);
         actions.add(() -> {
-            preferences.edit().putInt("palette", preferences.getInt("palette", 0) == 0 ? 1 : 0).apply();
+            preferences.edit().putInt("palette", (preferences.getInt("palette", 0) + 1) % PALETTE_NAMES.length).apply();
             hud.applyPalette();
             hud.invalidate();
         });
@@ -1396,12 +1398,19 @@ public final class HudActivity extends Activity {
         }
 
         void applyPalette() {
-            if (preferences.getInt("palette", 0) == 0) { // green phosphor
+            int palette = preferences.getInt("palette", 0);
+            if (palette == 0) { // green phosphor
                 ACCENT = 0xFF4DFF88;
                 MUTED = 0xFF3FB468;
                 LINE = 0xFF1D5C36;
                 UNLIT = 0xFF0A1D11;
                 BACKGROUND = 0xFF020A05;
+            } else if (palette == 2) { // blue
+                ACCENT = 0xFF4DB8FF;
+                MUTED = 0xFF3F8FC9;
+                LINE = 0xFF1D4E78;
+                UNLIT = 0xFF0A1A2B;
+                BACKGROUND = 0xFF020711;
             } else { // amber
                 ACCENT = 0xFFFFB64F;
                 MUTED = 0xFFB1874B;
