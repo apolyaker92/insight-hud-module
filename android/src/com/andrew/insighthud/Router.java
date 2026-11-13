@@ -20,7 +20,9 @@ final class Router {
     static final double LOCAL_DEG = 0.25, HIGH_DEG = 1.0;
     static final double DETAIL_METERS = 10_000;     // full detail within this distance of either end
     static final double ALL_DETAIL_METERS = 40_000; // trips shorter than this never leave full detail
-    static final double FASTEST_METERS_PER_SECOND = 33.0;
+    static final double FAR_TRIP_METERS = 120_000;  // beyond this, away from the ends, only classes up to FAR_CLASS
+    static final int FAR_CLASS = 2;
+    static final double FASTEST_METERS_PER_SECOND = 30.0;
     static final int MAX_NODES = 4_000_000;
     private static final double INF = Double.POSITIVE_INFINITY;
 
@@ -141,7 +143,9 @@ final class Router {
             int index = tile.nodeIndex(u.id);
             if (index < 0) continue;
             long before = u.parent == null ? Long.MIN_VALUE : u.parent.id;
+            int worst = !detail && straight > FAR_TRIP_METERS ? FAR_CLASS : 255;
             for (int e = tile.first[index]; e < tile.first[index + 1]; e++) {
+                if ((tile.roadClass[e] & 255) > worst) continue;
                 long target = tile.target[e];
                 if (before != Long.MIN_VALUE && tile.banned(before, u.id, target)) continue;
                 double turn = 0;

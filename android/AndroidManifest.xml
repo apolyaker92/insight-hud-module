@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
-    <application android:label="Insight HUD Module 2.3" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:supportsRtl="false">
+    <application android:label="Insight HUD Module 2.3" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:largeHeap="true" android:supportsRtl="false">
         <activity android:name=".HudActivity" android:exported="true" android:screenOrientation="landscape" android:launchMode="singleTask"
             android:configChanges="keyboard|keyboardHidden|navigation|uiMode|screenSize|smallestScreenSize|screenLayout|orientation|density|fontScale|locale|layoutDirection">
             <intent-filter>
