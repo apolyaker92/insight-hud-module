@@ -65,10 +65,10 @@ import org.json.JSONObject;
 public final class HudActivity extends Activity {
     private SharedPreferences preferences;
     private HudView hud;
-    private boolean mirror;
+    private volatile boolean mirror;
     private boolean demo;
-    private boolean mapPreview;
-    private boolean fullMap;
+    private volatile boolean mapPreview;
+    private volatile boolean fullMap;
     /** The plate over the full-screen map: 0 everything, 1 just road, speed and limit, 2 none. */
     private int mapReadout;
     private static final String[] READOUT_NAMES = {"FULL", "SPEED", "OFF"};
@@ -93,14 +93,43 @@ public final class HudActivity extends Activity {
     private boolean routeDbTried;
     private final java.util.concurrent.ExecutorService routing = java.util.concurrent.Executors.newSingleThreadExecutor();
     private volatile boolean routingBusy;
+    private final java.util.concurrent.atomic.AtomicInteger routeGeneration = new java.util.concurrent.atomic.AtomicInteger();
     private double[] navGoal;          // {lat, lon} of a destination the HUD routed to itself, for rerouting
     private String navGoalName = "";
+    private static final long RESUME_ROUTE_TIMEOUT_MS = 5000;
+    private RouteTrack parkedRoute;
+    private double[] parkedRouteGoal;
+    private String parkedRouteGoalName;
+    private long resumeRouteDeadline;
+    private final Runnable resumeRouteTimeout = () -> answerResumeRoute(false);
     private long lastRerouteAt;
 
     private String navToken() {
         String token = preferences.getString("navToken", null);
         if (token == null) token = newNavToken();
         return token;
+    }
+
+    private android.net.nsd.NsdManager.RegistrationListener navAdvertisement;
+
+    private void advertiseNavigation() {
+        android.net.nsd.NsdManager manager = getSystemService(android.net.nsd.NsdManager.class);
+        if (manager == null) return;
+        android.net.nsd.NsdServiceInfo service = new android.net.nsd.NsdServiceInfo();
+        service.setServiceName("Insight HUD");
+        service.setServiceType("_insighthud._tcp.");
+        service.setPort(NAV_PORT);
+        navAdvertisement = new android.net.nsd.NsdManager.RegistrationListener() {
+            @Override public void onServiceRegistered(android.net.nsd.NsdServiceInfo info) { }
+            @Override public void onServiceUnregistered(android.net.nsd.NsdServiceInfo info) { }
+            @Override public void onRegistrationFailed(android.net.nsd.NsdServiceInfo info, int error) {
+                android.util.Log.w("HudNav", "Bonjour registration failed: " + error);
+            }
+            @Override public void onUnregistrationFailed(android.net.nsd.NsdServiceInfo info, int error) {
+                android.util.Log.w("HudNav", "Bonjour unregistration failed: " + error);
+            }
+        };
+        manager.registerService(service, android.net.nsd.NsdManager.PROTOCOL_DNS_SD, navAdvertisement);
     }
 
     private String newNavToken() {
@@ -129,6 +158,10 @@ public final class HudActivity extends Activity {
                                 .put("arrived", route.arrived());
                     }
                     json.put("gps_fix", gpsFix != null);
+                    json.put("view", !mapPreview ? "gauges" : fullMap ? "full" : "split");
+                    json.put("mirror", mirror);
+                    json.put("brightness", brightnessMode);
+                    json.put("saved_places", savedPlaces());
                 } catch (JSONException impossible) {
                     // Only a null key could throw here.
                 }
@@ -157,8 +190,57 @@ public final class HudActivity extends Activity {
             @Override public void cancel() {
                 main.post(HudActivity.this::cancelRoute);
             }
+
+            @Override public String trips() {
+                return "{\"trips\":" + tripHistory() + "}";
+            }
+
+            @Override public String tracks(String id) {
+                java.io.File external = getExternalFilesDir(null);
+                return DriveLog.trackJson(external == null ? null : new java.io.File(external, "logs"), id);
+            }
+
+            @Override public String settings(JSONObject body) {
+                Object view = body.opt("view");
+                Object mirrored = body.opt("mirror");
+                Object brightness = body.opt("brightness");
+                JSONArray places = body.optJSONArray("saved_places");
+                if (body.has("saved_places")) {
+                    if (body.length() != 1 || places == null) return "Saved places must be a list";
+                    for (int i = 0; i < places.length(); i++) {
+                        JSONObject place = places.optJSONObject(i);
+                        if (place == null || !(place.opt("name") instanceof String)
+                                || place.optString("name").trim().isEmpty() || place.optString("name").length() > 80
+                                || !(place.opt("lat") instanceof Number) || !(place.opt("lon") instanceof Number)
+                                || Math.abs(place.optDouble("lat")) > 90 || Math.abs(place.optDouble("lon")) > 180) {
+                            return "Each saved place needs a name and valid coordinates";
+                        }
+                    }
+                    preferences.edit().putString("savedPlaces", places.toString()).apply();
+                    main.post(() -> hud.invalidate());
+                    return null;
+                }
+                if (body.has("view") && !"gauges".equals(view) && !"split".equals(view) && !"full".equals(view)) {
+                    return "View must be gauges, split or full";
+                }
+                if (body.has("mirror") && !(mirrored instanceof Boolean)) return "Mirror must be a boolean";
+                if (body.has("brightness") && (!(brightness instanceof Integer)
+                        || (int) brightness < 0 || (int) brightness >= BRIGHTNESS_NAMES.length)) {
+                    return "Brightness must be an integer from 0 to 3";
+                }
+                if (body.length() != (view == null ? 0 : 1) + (mirrored == null ? 0 : 1)
+                        + (brightness == null ? 0 : 1) || body.length() == 0) return "Unknown or missing settings";
+                main.post(() -> {
+                    if (view != null) setHudView(!"gauges".equals(view), "full".equals(view));
+                    if (mirrored != null) setMirror((boolean) mirrored);
+                    if (brightness != null) setBrightnessMode((int) brightness);
+                    hud.invalidate();
+                });
+                return null;
+            }
         });
         navServer.start();
+        advertiseNavigation();
     }
 
     /** The routing graph, opened on first use; null when no hud-route.db has been copied to the phone. */
@@ -175,12 +257,13 @@ public final class HudActivity extends Activity {
      * Works out a route from where the car is to a place, on a background thread. Returns a message when it cannot
      * even start (no graph, no GPS fix, already busy); otherwise null and the result arrives as the route itself.
      */
-    private String routeTo(double lat, double lon, String name, boolean reroute) {
+    private synchronized String routeTo(double lat, double lon, String name, boolean reroute) {
         RouteDatabase graph = routeDatabase();
         if (graph == null) return "No routing data on the HUD (hud-route.db)";
         Location from = gpsFix;
         if (from == null) return "No GPS fix yet";
         if (routingBusy) return "Already working out a route";
+        int generation = routeGeneration.incrementAndGet();
         routingBusy = true;
         double heading = from.hasBearing() && from.hasSpeed() && from.getSpeed() > 2.5 ? from.getBearing() : Double.NaN;
         double fromLat = from.getLatitude(), fromLon = from.getLongitude();
@@ -196,6 +279,7 @@ public final class HudActivity extends Activity {
             Router.Result done = result;
             main.post(() -> {
                 routingBusy = false;
+                if (generation != routeGeneration.get()) return;
                 if (done.error != null) {
                     raiseAlert(done.error.toUpperCase(Locale.US), Alerts.WARN);
                     return;
@@ -210,11 +294,13 @@ public final class HudActivity extends Activity {
     }
 
     private void startRoute(RouteTrack track) {
+        routeGeneration.incrementAndGet();
         navGoal = null;
         startRoute(track, true);
     }
 
     private void startRoute(RouteTrack track, boolean announce) {
+        clearResumeRoute();
         nav = track;
         navVersion++;
         navTileX = new double[track.lat.length];
@@ -233,11 +319,34 @@ public final class HudActivity extends Activity {
     }
 
     private void cancelRoute() {
+        clearResumeRoute();
+        routeGeneration.incrementAndGet();
         nav = null;
         navGoal = null;
         navArrivedAt = 0;
         updateMap();
         hud.invalidate();
+    }
+
+    private void clearResumeRoute() {
+        parkedRoute = null;
+        parkedRouteGoal = null;
+        parkedRouteGoalName = null;
+        resumeRouteDeadline = 0;
+        main.removeCallbacks(resumeRouteTimeout);
+    }
+
+    private void answerResumeRoute(boolean resume) {
+        RouteTrack route = parkedRoute;
+        if (route == null) return;
+        if (resume && resumeRouteDeadline > SystemClock.uptimeMillis()) {
+            navGoal = parkedRouteGoal;
+            navGoalName = parkedRouteGoalName;
+            startRoute(route, true);
+        } else {
+            clearResumeRoute();
+            hud.invalidate();
+        }
     }
 
     /** Moves the car along the route on each GPS fix and raises the arrival and off-route banners. */
@@ -335,7 +444,7 @@ public final class HudActivity extends Activity {
     private static final long GPS_UNAVAILABLE_MS = 20000;
     private static final long GPS_TEST_MS = 5 * 60 * 1000;
     private static final long GPS_RETRY_MS = 5000;
-    private int brightnessMode; // 0 auto (light sensor), 1 high, 2 medium, 3 low
+    private volatile int brightnessMode; // 0 auto (light sensor), 1 high, 2 medium, 3 low
     private static final String[] BRIGHTNESS_NAMES = {"AUTO", "HIGH", "MED", "LOW"};
     private static final float[] BRIGHTNESS_LEVELS = {0f, 1.0f, 0.45f, 0.08f};
     private SensorManager sensors;
@@ -598,6 +707,7 @@ public final class HudActivity extends Activity {
             if (state != null && plugged && state.getBoolean("accessoryActive")) {
                 powerKnown = powered = accessoryActive = true;
                 trip.restore(state.getBundle("trip"));
+                setHotspotPower(true);
                 updateScreenPower();
             }
             batteryReceiver.onReceive(this, battery);
@@ -637,6 +747,15 @@ public final class HudActivity extends Activity {
         roadMap.close();
         if (driveLog != null) driveLog.close();
         if (navServer != null) navServer.stop();
+        if (navAdvertisement != null) {
+            android.net.nsd.NsdManager manager = getSystemService(android.net.nsd.NsdManager.class);
+            try {
+                if (manager != null) manager.unregisterService(navAdvertisement);
+            } catch (IllegalArgumentException alreadyUnregistered) {
+                // Registration can fail before the activity is destroyed.
+            }
+            navAdvertisement = null;
+        }
         routing.shutdownNow();
         if (routeDb != null) routeDb.close();
         unregisterReceiver(batteryReceiver);
@@ -773,6 +892,7 @@ public final class HudActivity extends Activity {
             parkedBlank = false;
             enterStandbyPower(false);
             setBluetoothPower(true);
+            setHotspotPower(true);
             startupPending = true;
             updateScreenPower();
             startTripAnimation();
@@ -781,6 +901,8 @@ public final class HudActivity extends Activity {
         } else if (!plugged && accessoryActive) {
             accessoryLostAt = SystemClock.elapsedRealtime();
             main.postDelayed(confirmPowerLoss, POWER_LOSS_DELAY_MS);
+        } else if (!plugged) {
+            setHotspotPower(false);
         }
     }
 
@@ -830,7 +952,20 @@ public final class HudActivity extends Activity {
     }
 
     private void parkHud() {
+        openPlaces = null;
         accessoryActive = false;
+        routeGeneration.incrementAndGet();
+        if (nav != null && !nav.arrived()) {
+            parkedRoute = nav;
+            parkedRouteGoal = navGoal;
+            parkedRouteGoalName = navGoalName;
+        }
+        nav = null;
+        navGoal = null;
+        navArrivedAt = 0;
+        resumeRouteDeadline = 0;
+        main.removeCallbacks(resumeRouteTimeout);
+        setHotspotPower(false);
         long lostWallClock = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - accessoryLostAt);
         shutdownReport = trip.finish(accessoryLostAt, lostWallClock);
         trip = new TripStats();
@@ -925,6 +1060,7 @@ public final class HudActivity extends Activity {
     }
 
     @Override protected void onStop() {
+        openPlaces = null;
         foreground = false;
         main.removeCallbacks(clockTick);
         updateLightSensor();
@@ -1044,6 +1180,15 @@ public final class HudActivity extends Activity {
         } catch (SecurityException refused) {
             Log.i("HudBt", "not allowed to switch Bluetooth (not a privileged app)");
         }
+    }
+
+    private void setHotspotPower(boolean on) {
+        if (!preferences.getBoolean("hotspotWithIgnition", true)) return;
+        if (checkSelfPermission("android.permission.TETHER_PRIVILEGED") != PackageManager.PERMISSION_GRANTED) {
+            Log.i("HudHotspot", "Ignition control needs privileged tethering permission");
+            return;
+        }
+        HotspotPower.set(this, on);
     }
 
     private boolean hasBluetoothPermission() {
@@ -1390,6 +1535,12 @@ public final class HudActivity extends Activity {
         });
         labels.add("Bluetooth off when parked: " + (preferences.getBoolean("btParkOff", true) ? "ON" : "OFF"));
         actions.add(() -> preferences.edit().putBoolean("btParkOff", !preferences.getBoolean("btParkOff", true)).apply());
+        labels.add("Hotspot follows ignition: " + (preferences.getBoolean("hotspotWithIgnition", true) ? "ON" : "OFF"));
+        actions.add(() -> {
+            boolean enabled = !preferences.getBoolean("hotspotWithIgnition", true);
+            preferences.edit().putBoolean("hotspotWithIgnition", enabled).apply();
+            if (enabled) setHotspotPower(accessoryActive);
+        });
         labels.add("Choose paired OBD adapter");
         actions.add(this::chooseAdapter);
         labels.add("Pair device / enable Bluetooth");
@@ -1519,6 +1670,13 @@ public final class HudActivity extends Activity {
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         int keyCode = event.getKeyCode();
+        if (resumeRouteDeadline != 0 && keyCode >= KeyEvent.KEYCODE_F1 && keyCode <= KeyEvent.KEYCODE_F4) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0 && hasWindowFocus()) {
+                if (keyCode == KeyEvent.KEYCODE_F1) answerResumeRoute(true);
+                if (keyCode == KeyEvent.KEYCODE_F2) answerResumeRoute(false);
+            }
+            return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_F5 || keyCode == KeyEvent.KEYCODE_F6) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
                     && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD) {
@@ -1532,24 +1690,97 @@ public final class HudActivity extends Activity {
             case KeyEvent.KEYCODE_F1: control = 4; break;
             case KeyEvent.KEYCODE_F2: control = 6; break;
             case KeyEvent.KEYCODE_F3: control = 7; break;
-            case KeyEvent.KEYCODE_F4: control = 2; break;
+            case KeyEvent.KEYCODE_F4: control = 10; break;
             default: return super.dispatchKeyEvent(event);
         }
-        if ((control == 6 || control == 7) && !mapPreview) return true; // Heading and range only act on the map.
+        if ((control == 6 || control == 7) && !mapPreview && openPlaces == null) return true; // Heading and range only act on the map.
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
                 && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD
                 && (startupStartedAt == 0 || startupClock(SystemClock.uptimeMillis()) >= STARTUP_DURATION_MS)) {
-            activateControl(control);
+            if (openPlaces == null) activateControl(control);
+            else if (keyCode == KeyEvent.KEYCODE_F4) {
+                selectedPlace = (selectedPlace + 1) % openPlaces.length();
+                hud.invalidate();
+            } else if (keyCode == KeyEvent.KEYCODE_F1) {
+                chooseSavedPlace();
+            } else if (keyCode == KeyEvent.KEYCODE_F2) {
+                openPlaces = null;
+                hud.invalidate();
+            }
         }
         return true;
+    }
+
+    private JSONArray openPlaces;
+    private int selectedPlace;
+
+    private JSONArray savedPlaces() {
+        try {
+            return new JSONArray(preferences.getString("savedPlaces", "[]"));
+        } catch (JSONException invalid) {
+            return new JSONArray();
+        }
+    }
+
+    private void showSavedPlaces() {
+        JSONArray places = savedPlaces();
+        if (places.length() == 0) {
+            raiseAlert("ADD SAVED PLACES ON IPHONE", Alerts.INFO);
+            hud.invalidate();
+            return;
+        }
+        openPlaces = places;
+        selectedPlace = 0;
+        hud.invalidate();
+    }
+
+    private void chooseSavedPlace() {
+        JSONObject place = openPlaces.optJSONObject(selectedPlace);
+        openPlaces = null;
+        if (place != null) routeToSavedPlace(place);
+        hud.invalidate();
+    }
+
+    private void routeToSavedPlace(JSONObject place) {
+        String problem = routeTo(place.optDouble("lat"), place.optDouble("lon"), place.optString("name"), false);
+        if (problem != null) {
+            raiseAlert(problem.toUpperCase(Locale.US), Alerts.WARN);
+            hud.invalidate();
+        } else if (!mapPreview || demo) {
+            if (demo) {
+                demo = false;
+                connectSavedAdapter();
+            }
+            setHudView(true, true);
+            hud.invalidate();
+        }
+    }
+
+    private void setMirror(boolean enabled) {
+        mirror = enabled;
+        preferences.edit().putBoolean("mirror", mirror).apply();
+    }
+
+    private void setBrightnessMode(int mode) {
+        brightnessMode = mode;
+        preferences.edit().putInt("brightnessMode", brightnessMode).apply();
+        updateLightSensor();
+        applyBrightness();
+    }
+
+    private void setHudView(boolean map, boolean full) {
+        if (map && !mapPreview) mapPreviewStartedAt = SystemClock.uptimeMillis();
+        mapPreview = map;
+        fullMap = full;
+        preferences.edit().putBoolean("mapPreview", mapPreview).putBoolean("fullMap", fullMap).apply();
+        updateMap();
     }
 
     private void activateControl(int control) {
         boolean skipClick = false;
         switch (control) {
             case 0:
-                mirror = !mirror;
-                preferences.edit().putBoolean("mirror", mirror).apply();
+                setMirror(!mirror);
                 break;
             case 1:
                 demo = !demo;
@@ -1558,27 +1789,14 @@ public final class HudActivity extends Activity {
                 updateMap();
                 break;
             case 2:
-                brightnessMode = (brightnessMode + 1) % BRIGHTNESS_NAMES.length;
-                preferences.edit().putInt("brightnessMode", brightnessMode).apply();
-                updateLightSensor();
-                applyBrightness();
+                setBrightnessMode((brightnessMode + 1) % BRIGHTNESS_NAMES.length);
                 break;
             case 3:
                 showTripHistory();
                 break;
             case 4:
                 // View cycles full map, then the split map beside speed, then speed beside the gauges.
-                if (mapPreview && fullMap) {
-                    fullMap = false;
-                } else if (mapPreview) {
-                    mapPreview = false;
-                } else {
-                    mapPreview = true;
-                    fullMap = true;
-                    mapPreviewStartedAt = SystemClock.uptimeMillis();
-                }
-                preferences.edit().putBoolean("mapPreview", mapPreview).putBoolean("fullMap", fullMap).apply();
-                updateMap();
+                setHudView(!mapPreview || fullMap, !mapPreview);
                 break;
             case 5:
                 enableMapLocation();
@@ -1612,6 +1830,9 @@ public final class HudActivity extends Activity {
             case 9:
                 fullMap = !fullMap;
                 preferences.edit().putBoolean("fullMap", fullMap).apply();
+                break;
+            case 10:
+                showSavedPlaces();
                 break;
             default:
                 return;
@@ -1783,7 +2004,17 @@ public final class HudActivity extends Activity {
             if (thermalHold) drawThermalWarning(canvas, now);
             else if (shuttingDown) drawShutdown(canvas, now - shutdownStartedAt);
             else if (starting) drawStartup(canvas, startupElapsed);
-            else drawGauges(canvas, now);
+            else {
+                drawGauges(canvas, now);
+                if (parkedRoute != null && accessoryActive && powered && !startupPending && hasWindowFocus()) {
+                    if (resumeRouteDeadline == 0) {
+                        resumeRouteDeadline = now + RESUME_ROUTE_TIMEOUT_MS;
+                        main.postAtTime(resumeRouteTimeout, resumeRouteDeadline);
+                    }
+                    drawResumeRoute(canvas, now);
+                    postInvalidateDelayed(100);
+                } else if (openPlaces != null) drawSavedPlaces(canvas);
+            }
             boolean alertHeld = thermalHold || shuttingDown || starting || startupPending;
             Alerts.Alert alert = alerts.tick(now, alertHeld);
             if (alert != null) {
@@ -1801,6 +2032,100 @@ public final class HudActivity extends Activity {
                         || (lockStartedAt != 0 && now - lockStartedAt < TARGET_CAPTION_MS)) postInvalidateDelayed(32);
                 else if (demo && powered) postInvalidateDelayed(100);
             }
+        }
+
+        private static final float PLACES_LEFT = 309, PLACES_RIGHT = 971;
+        private static final float PLACES_TOP = 101, PLACES_ROWS = 199, PLACE_HEIGHT = 60;
+        private static final float PLACES_FOOTER = 451, PLACES_BOTTOM = 493;
+        private static final int VISIBLE_PLACES = 4;
+
+        private void drawResumeRoute(Canvas canvas, long now) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(ground(0x96));
+            canvas.drawRect(FRAME_LEFT, FRAME_TOP, FRAME_LEFT + FRAME_WIDTH,
+                    FRAME_TOP + FRAME_BASE_HEIGHT + extraRows, paint);
+            paint.setColor(BACKGROUND);
+            canvas.drawRect(PLACES_LEFT, 173, PLACES_RIGHT, 381, paint);
+            border(canvas, PLACES_LEFT, 173, PLACES_RIGHT, 381);
+            paint.setColor(ACCENT);
+            float fraction = Math.max(0, resumeRouteDeadline - now) / (float) RESUME_ROUTE_TIMEOUT_MS;
+            canvas.drawRect(PLACES_LEFT, 173, PLACES_LEFT + (PLACES_RIGHT - PLACES_LEFT) * fraction, 177, paint);
+            text(canvas, "CONTINUE NAVIGATION?", 640, 234, 32, ACCENT, true, Paint.Align.CENTER);
+            String name = parkedRoute.name.toUpperCase(Locale.US);
+            if (name.length() > 36) name = name.substring(0, 35) + "…";
+            text(canvas, name, 640, 275, 22, MUTED, false, Paint.Align.CENTER);
+            text(canvas, "[F1] YES", 457, 340, 23, ACCENT, true, Paint.Align.CENTER);
+            text(canvas, "[F2] NO", 823, 340, 23, MUTED, true, Paint.Align.CENTER);
+        }
+
+        private int firstVisiblePlace() {
+            return Math.max(0, Math.min(selectedPlace - 1, openPlaces.length() - VISIBLE_PLACES));
+        }
+
+        private void drawSavedPlaces(Canvas canvas) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(ground(0x96));
+            canvas.drawRect(FRAME_LEFT, FRAME_TOP, FRAME_LEFT + FRAME_WIDTH,
+                    FRAME_TOP + FRAME_BASE_HEIGHT + extraRows, paint);
+            paint.setColor(BACKGROUND);
+            canvas.drawRect(PLACES_LEFT, PLACES_TOP, PLACES_RIGHT, PLACES_BOTTOM, paint);
+            border(canvas, PLACES_LEFT, PLACES_TOP, PLACES_RIGHT, PLACES_BOTTOM);
+
+            paint.setColor(ACCENT);
+            canvas.drawRect(PLACES_LEFT, PLACES_TOP, PLACES_LEFT + 98, PLACES_TOP + 4, paint);
+            text(canvas, "OFFLINE NAVIGATION", 339, 132, 14, MUTED, false);
+            text(canvas, "SAVED PLACES", 339, 174, 34, ACCENT, true);
+            text(canvas, (selectedPlace + 1) + " / " + openPlaces.length(), 939, 173,
+                    21, ACCENT, true, Paint.Align.RIGHT);
+            paint.setColor(LINE);
+            canvas.drawRect(339, 186, 941, 188, paint);
+
+            int first = firstVisiblePlace();
+            int end = Math.min(first + VISIBLE_PLACES, openPlaces.length());
+            for (int i = first; i < end; i++) {
+                JSONObject place = openPlaces.optJSONObject(i);
+                if (place == null) continue;
+                float y = PLACES_ROWS + (i - first) * PLACE_HEIGHT;
+                boolean selected = i == selectedPlace;
+                paint.setColor(selected ? (ACCENT & 0xffffff) | 0x27000000 : ground(0xff));
+                canvas.drawRect(329, y, 951, y + 52, paint);
+                if (selected) {
+                    paint.setColor(ACCENT);
+                    canvas.drawRect(329, y, 334, y + 52, paint);
+                }
+                drawSavedPlaceIcon(canvas, 358, y + 26, place.optString("icon"));
+                String name = place.optString("name").toUpperCase(Locale.US);
+                paint.setTypeface(selected ? boldFont : labelFont);
+                paint.setTextSize(24);
+                if (paint.measureText(name) > 497) name = android.text.TextUtils.ellipsize(name,
+                        new android.text.TextPaint(paint), 497, android.text.TextUtils.TruncateAt.END).toString();
+                text(canvas, name, 390, y + 34, 24, selected ? ACCENT : MUTED, selected);
+                if (selected) text(canvas, ">", 923, y + 34, 24, ACCENT, true);
+            }
+
+            paint.setColor(LINE);
+            canvas.drawRect(339, PLACES_FOOTER, 941, PLACES_FOOTER + 2, paint);
+            text(canvas, "[F4] NEXT", 345, 478, 17, MUTED, false);
+            text(canvas, "[F1] GO", 640, 478, 17, ACCENT, true, Paint.Align.CENTER);
+            text(canvas, "[F2] CANCEL", 938, 478, 17, MUTED, false, Paint.Align.RIGHT);
+        }
+
+        private void savedPlacesTap(float screenX, float screenY) {
+            float x = (screenX - left) / scale;
+            float y = (screenY - top) / scale;
+            if (mirror) x = 1280 - x;
+            if (x < PLACES_LEFT || x > PLACES_RIGHT || y < PLACES_TOP || y > PLACES_BOTTOM) {
+                openPlaces = null;
+            } else if (y >= PLACES_FOOTER) {
+                if (x > 782) openPlaces = null;
+                else if (x >= 500) chooseSavedPlace();
+                else selectedPlace = (selectedPlace + 1) % openPlaces.length();
+            } else if (y >= PLACES_ROWS) {
+                int row = (int) ((y - PLACES_ROWS) / PLACE_HEIGHT);
+                int index = firstVisiblePlace() + row;
+                if (row < VISIBLE_PLACES && index < openPlaces.length()) selectedPlace = index;
+            }
+            invalidate();
         }
 
         /** A banner that takes over the header: calm for info, flashing for warnings and critical alerts. */
@@ -2246,6 +2571,8 @@ public final class HudActivity extends Activity {
             paint.setStyle(Paint.Style.FILL);
             canvas.restore();
 
+            drawSavedPlaceMarkers(canvas, scene);
+
             // Keep the reflected display legible by separating labels from each other and the marker.
             int labelCount = 0;
             for (OfflineRoadMap.Label label : scene.labels) {
@@ -2333,26 +2660,113 @@ public final class HudActivity extends Activity {
             return RoadLookup.compass(gpsCourse) + String.format(Locale.US, " %03d\u00b0", Math.round(gpsCourse) % 360);
         }
 
-        private int routeKey = Integer.MIN_VALUE;
+        private String markerSource;
+        private JSONArray markers = new JSONArray();
+
+        private void drawSavedPlaceMarkers(Canvas canvas, OfflineRoadMap.Scene scene) {
+            String source = preferences.getString("savedPlaces", "[]");
+            if (!source.equals(markerSource)) {
+                markers = savedPlaces();
+                markerSource = source;
+            }
+            for (int i = 0; i < markers.length(); i++) {
+                JSONObject place = markers.optJSONObject(i);
+                if (place == null) continue;
+                mapPoint[0] = (float) (OfflineRoadMap.tileX(place.optDouble("lon")) - scene.x);
+                mapPoint[1] = (float) (OfflineRoadMap.tileY(place.optDouble("lat")) - scene.y);
+                mapTransform.mapPoints(mapPoint);
+                float x = mapPoint[0], y = mapPoint[1];
+                if (x < mapLeft() + 15 || x > MAP_RIGHT - 15 || y < mapTop() + 15 || y > mapBottom() - 15) continue;
+                drawSavedPlaceIcon(canvas, x, y, place.optString("icon"));
+            }
+        }
+
+        private void drawSavedPlaceIcon(Canvas canvas, float x, float y, String icon) {
+            canvas.save();
+            canvas.translate(x, y);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(BACKGROUND);
+            canvas.drawCircle(0, 0, 15, paint);
+            paint.setColor(ACCENT);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2);
+            canvas.drawCircle(0, 0, 14, paint);
+            paint.setStyle(Paint.Style.FILL);
+            switch (icon) {
+                case "home":
+                    savedIconShape(canvas, -9, -1, 0, -9, 9, -1, 6, -1, 6, 7, -6, 7, -6, -1);
+                    break;
+                case "work":
+                    canvas.drawRoundRect(-8, -4, 8, 7, 2, 2, paint);
+                    paint.setStyle(Paint.Style.STROKE);
+                    canvas.drawRect(-3, -8, 3, -4, paint);
+                    break;
+                case "star":
+                    savedIconShape(canvas, 0, -10, 3, -3, 10, -3, 5, 2, 7, 9, 0, 5, -7, 9, -5, 2, -10, -3, -3, -3);
+                    break;
+                case "fuel":
+                    canvas.drawRect(-8, -8, 3, 8, paint);
+                    paint.setStyle(Paint.Style.STROKE);
+                    canvas.drawLine(3, 5, 8, 5, paint);
+                    canvas.drawLine(8, 5, 8, -4, paint);
+                    paint.setStyle(Paint.Style.FILL);
+                    paint.setColor(BACKGROUND);
+                    canvas.drawRect(-6, -6, 1, -2, paint);
+                    break;
+                case "food":
+                    paint.setStrokeWidth(2);
+                    canvas.drawLine(-4, -2, -4, 8, paint);
+                    canvas.drawLine(-7, -8, -7, -2, paint);
+                    canvas.drawLine(-4, -8, -4, -2, paint);
+                    canvas.drawLine(-1, -8, -1, -2, paint);
+                    canvas.drawLine(-7, -2, -1, -2, paint);
+                    canvas.drawOval(2, -8, 8, 0, paint);
+                    canvas.drawLine(5, 0, 5, 8, paint);
+                    break;
+                default:
+                    savedIconShape(canvas, -5, -1, 5, -1, 0, 8);
+                    canvas.drawCircle(0, -3, 6, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+            canvas.restore();
+        }
+
+        private void savedIconShape(Canvas canvas, float... points) {
+            Path shape = new Path();
+            shape.moveTo(points[0], points[1]);
+            for (int i = 2; i < points.length; i += 2) shape.lineTo(points[i], points[i + 1]);
+            shape.close();
+            canvas.drawPath(shape, paint);
+        }
+
+        private int routeSceneX, routeSceneY, routeDrawVersion = -1;
+        private double routeDrawAlong;
         private final Path routePath = new Path();
+        private final Path remainingRoutePath = new Path();
 
         /** The route as a heavy line over the roads, and a ring at the destination. */
         private void drawRouteOverlay(Canvas canvas, OfflineRoadMap.Scene scene, float strokeScale) {
-            int key = (scene.x * 31 + scene.y) * 31 + navVersion;
-            if (key != routeKey) {
-                routeKey = key;
+            double along = nav.alongMeters();
+            if (scene.x != routeSceneX || scene.y != routeSceneY || navVersion != routeDrawVersion
+                    || along != routeDrawAlong) {
+                routeSceneX = scene.x;
+                routeSceneY = scene.y;
+                routeDrawVersion = navVersion;
+                routeDrawAlong = along;
                 routePath.reset();
-                boolean pen = false;
-                for (int i = 0; i < navTileX.length; i++) {
+                remainingRoutePath.reset();
+                for (int i = 1; i < navTileX.length; i++) {
                     double dx = navTileX[i] - scene.x, dy = navTileY[i] - scene.y;
-                    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
-                        pen = false;
-                        continue;
-                    }
-                    if (pen) routePath.lineTo((float) dx, (float) dy);
-                    else {
-                        routePath.moveTo((float) dx, (float) dy);
-                        pen = true;
+                    double px = navTileX[i - 1] - scene.x, py = navTileY[i - 1] - scene.y;
+                    if (Math.max(px, dx) < -4 || Math.min(px, dx) > 4
+                            || Math.max(py, dy) < -4 || Math.min(py, dy) > 4) continue;
+                    routePath.moveTo((float) px, (float) py);
+                    routePath.lineTo((float) dx, (float) dy);
+                    double end = nav.metersAtPoint(i), start = nav.metersAtPoint(i - 1);
+                    if (end > along) {
+                        double t = along <= start ? 0 : (along - start) / (end - start);
+                        remainingRoutePath.moveTo((float) (px + (dx - px) * t), (float) (py + (dy - py) * t));
+                        remainingRoutePath.lineTo((float) dx, (float) dy);
                     }
                 }
             }
@@ -2360,11 +2774,20 @@ public final class HudActivity extends Activity {
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeJoin(Paint.Join.ROUND);
             paint.setColor(BACKGROUND);
-            paint.setStrokeWidth(11f / strokeScale);
+            paint.setStrokeWidth(9f / strokeScale);
             canvas.drawPath(routePath, paint);
+            paint.setColor((ACCENT & 0x00ffffff) | 0x50000000);
+            paint.setStrokeWidth(3f / strokeScale);
+            canvas.drawPath(routePath, paint);
+            paint.setColor((ACCENT & 0x00ffffff) | 0x1c000000);
+            paint.setStrokeWidth(14f / strokeScale);
+            canvas.drawPath(remainingRoutePath, paint);
+            paint.setColor((ACCENT & 0x00ffffff) | 0x55000000);
+            paint.setStrokeWidth(9f / strokeScale);
+            canvas.drawPath(remainingRoutePath, paint);
             paint.setColor(ACCENT);
-            paint.setStrokeWidth(6.5f / strokeScale);
-            canvas.drawPath(routePath, paint);
+            paint.setStrokeWidth(5f / strokeScale);
+            canvas.drawPath(remainingRoutePath, paint);
             paint.setStrokeJoin(Paint.Join.MITER);
             int last = navTileX.length - 1;
             float dx = (float) (navTileX[last] - scene.x), dy = (float) (navTileY[last] - scene.y);
@@ -2777,6 +3200,25 @@ public final class HudActivity extends Activity {
                     releaseStartupSound();
                     performClick();
                     invalidate();
+                }
+                return true;
+            }
+            if (resumeRouteDeadline != 0) {
+                if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                    float x = (event.getX() - left) / scale;
+                    float y = (event.getY() - top) / scale;
+                    if (mirror) x = 1280 - x;
+                    if (x >= PLACES_LEFT && x <= PLACES_RIGHT && y >= 300 && y <= 381) {
+                        answerResumeRoute(x < 640);
+                        performClick();
+                    }
+                }
+                return true;
+            }
+            if (openPlaces != null) {
+                if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                    savedPlacesTap(event.getX(), event.getY());
+                    performClick();
                 }
                 return true;
             }

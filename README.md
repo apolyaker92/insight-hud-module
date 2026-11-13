@@ -36,6 +36,14 @@ The limits, names, signals, cameras and the rest come from OpenStreetMap, so the
 
 The HUD can follow a route that a phone sends it over Wi-Fi. BT SETUP > Navigation shows the HUD's address and a pairing code. POST a route to `http://ADDRESS:8765/route` with the code in an `X-HUD-Token` header (or `?token=CODE`); GET `/status` to check, POST `/cancel` to stop. The body is either the HUD's own JSON (`name`, `duration_s`, `polyline` + `polyline_precision` or `points`, `steps` with `instruction`/`street`/`type`/`modifier` and `at_m` or `location`) or an OSRM-style reply forwarded as received (add `?precision=6` when it was asked for with `geometries=polyline6`). The route is drawn over the map, and a strip shows the next turn's arrow, the distance, the instruction, the miles left and the arrival time; an OFF ROUTE banner appears after about 4 seconds more than 45 m from the line, and ARRIVED near the end. Turning a route into guidance happens on the HUD, so the phone only has to supply the line and steps.
 
+### iPhone companion
+
+Open `ios/InsightHUD.xcodeproj` in Xcode. The app targets iOS 17 or later. Select your development team under Signing & Capabilities to run it on a paired iPhone.
+
+Turn on Wi-Fi hotspot on the Android HUD and join it from the iPhone's Wi-Fi settings. You can also connect both devices to the same Wi-Fi network. Enter the HUD's hotspot address (the iPhone's Wi-Fi Router address) and the pairing code shown under BT SETUP > Navigation, tap **Check connection**, and allow Local Network access. Search for a destination, preview driving directions, and tap **Upload directions**. Search and preview use Apple's online services, so the iPhone needs internet access. **Send destination for offline routing** uses the HUD's GPS and installed routing graph after you select a search result.
+
+The app checks the saved connection when it becomes active and requests brief background time to finish an upload you started. Open the app after the iPhone joins the HUD hotspot. After upload, the HUD handles guidance while the iPhone is locked or the app is closed.
+
 ### Routing on the HUD (offline)
 
 `POST /destination` with `{"lat":..,"lon":..,"name":".."}` makes the HUD work out the route itself from its GPS fix, with no internet, using `hud-route.db` in the app's files folder (`/sdcard/Android/data/com.andrew.insighthud/files/`). It reroutes on its own (about 8 seconds after leaving the route) and shows REROUTING. A 25 km Albany trip is found in about a second.

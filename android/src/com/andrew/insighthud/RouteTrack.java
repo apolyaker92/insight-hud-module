@@ -239,6 +239,7 @@ final class RouteTrack {
     boolean arrived() { return arrived; }
 
     double alongMeters() { return along; }
+    double metersAtPoint(int index) { return cumulative[index]; }
 
     double offMeters() { return offMeters; }
 

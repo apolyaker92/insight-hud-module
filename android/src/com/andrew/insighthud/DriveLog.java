@@ -3,12 +3,15 @@ package com.andrew.insighthud;
 import android.location.Location;
 import android.util.Log;
 import java.io.BufferedWriter;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import org.json.JSONArray;
 
 /**
  * One CSV per drive in the app's external files folder (logs/drive-DATE.csv), a row a second while the car is
@@ -74,6 +77,58 @@ final class DriveLog {
 
     private static String number(Double value) {
         return value == null ? "" : String.format(Locale.US, "%.1f", value);
+    }
+
+    /** Exports only GPS geometry, with separate lines across gaps in the log. */
+    static String trackJson(File folder, String id) {
+        if (id == null) {
+            String[] names = folder == null ? null : folder.list((dir, name) -> isDriveLog(name));
+            JSONArray drives = new JSONArray();
+            if (names != null) {
+                java.util.Arrays.sort(names);
+                for (String name : names) drives.put(name);
+            }
+            return "{\"drives\":" + drives + "}";
+        }
+        if (folder == null || !isDriveLog(id)) return null;
+        JSONArray lines = new JSONArray();
+        JSONArray line = new JSONArray();
+        double lastLat = Double.NaN, lastLon = Double.NaN;
+        long lastTime = 0;
+        SimpleDateFormat timestamp = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US);
+        try (BufferedReader input = new BufferedReader(new FileReader(new File(folder, id)))) {
+            input.readLine();
+            String row;
+            while ((row = input.readLine()) != null) {
+                String[] fields = row.split(",", 4);
+                if (fields.length < 4) continue;
+                try {
+                    long time = timestamp.parse(fields[0]).getTime();
+                    double lat = Double.parseDouble(fields[1]), lon = Double.parseDouble(fields[2]);
+                    if (!Double.isFinite(lat) || !Double.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue;
+                    if (time - lastTime > 20_000 || time < lastTime) {
+                        if (line.length() > 1) lines.put(line);
+                        line = new JSONArray();
+                    }
+                    lastTime = time;
+                    if (line.length() == 0 || Math.abs(lastLat - lat) + Math.abs(lastLon - lon) >= 0.00006) {
+                        line.put(new JSONArray().put(lat).put(lon));
+                        lastLat = lat;
+                        lastLon = lon;
+                    }
+                } catch (NumberFormatException | java.text.ParseException | org.json.JSONException ignored) {
+                    // Logs can contain rows without a GPS fix.
+                }
+            }
+            if (line.length() > 1) lines.put(line);
+            return "{\"lines\":" + lines + "}";
+        } catch (IOException failed) {
+            return null;
+        }
+    }
+
+    private static boolean isDriveLog(String name) {
+        return name.matches("drive-[0-9]{8}-[0-9]{6}\\.csv");
     }
 
     void close() {

@@ -2,5 +2,6 @@
 <permissions>
     <privapp-permissions package="com.andrew.insighthud">
         <permission name="android.permission.BLUETOOTH_PRIVILEGED"/>
+        <permission name="android.permission.TETHER_PRIVILEGED"/>
     </privapp-permissions>
 </permissions>

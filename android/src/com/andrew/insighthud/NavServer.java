@@ -27,6 +27,8 @@ import org.json.JSONObject;
  *   GET  /status      what the HUD is doing
  *   POST /route       a route to follow (see RouteParser for the JSON); ?precision=6 for polyline6 geometry
  *   POST /destination {"lat":..,"lon":..,"name":".."}: route there on the HUD itself
+ *   POST /settings    set one or more display settings
+ *   GET  /trips       recent completed trip summaries
  *   POST /cancel      stop navigating
  */
 final class NavServer {
@@ -37,9 +39,12 @@ final class NavServer {
     /** Called on a server thread; implementations post to the UI thread themselves. */
     interface Handler {
         String status();
+        String trips();
+        String tracks(String id);
         /** Returns null on success or a message to send back as the error. */
         String route(JSONObject body, int precision);
         String destination(JSONObject body);
+        String settings(JSONObject body);
         void cancel();
     }
 
@@ -167,10 +172,17 @@ final class NavServer {
             }
             if (method.equals("GET") && path.equals("/status")) {
                 reply(out, 200, handler.status());
+            } else if (method.equals("GET") && path.equals("/trips")) {
+                reply(out, 200, handler.trips());
+            } else if (method.equals("GET") && path.equals("/tracks")) {
+                String track = handler.tracks(params.get("id"));
+                if (track == null) reply(out, 404, error("Drive log unavailable"));
+                else reply(out, 200, track);
             } else if (method.equals("POST") && path.equals("/cancel")) {
                 handler.cancel();
                 reply(out, 200, "{\"ok\":true}");
-            } else if (method.equals("POST") && (path.equals("/route") || path.equals("/destination"))) {
+            } else if (method.equals("POST") && (path.equals("/route") || path.equals("/destination")
+                    || path.equals("/settings"))) {
                 JSONObject json;
                 try {
                     json = new JSONObject(new String(body, StandardCharsets.UTF_8));
@@ -187,8 +199,10 @@ final class NavServer {
                         precision = 5;
                     }
                     problem = handler.route(json, precision);
-                } else {
+                } else if (path.equals("/destination")) {
                     problem = handler.destination(json);
+                } else {
+                    problem = handler.settings(json);
                 }
                 if (problem == null) reply(out, 200, "{\"ok\":true}");
                 else reply(out, 422, error(problem));
