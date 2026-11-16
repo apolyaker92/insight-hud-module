@@ -2984,16 +2984,14 @@ public final class HudActivity extends Activity {
             paint.setColor(BACKGROUND);
             paint.setStrokeWidth(9f / strokeScale);
             canvas.drawPath(routePath, paint);
-            paint.setColor((ACCENT & 0x00ffffff) | 0x50000000);
+            // The route is plain white: the part already driven is dimmer, the part ahead full strength.
+            paint.setColor(0x66FFFFFF);
             paint.setStrokeWidth(3f / strokeScale);
             canvas.drawPath(routePath, paint);
-            paint.setColor((ACCENT & 0x00ffffff) | 0x1c000000);
-            paint.setStrokeWidth(14f / strokeScale);
-            canvas.drawPath(remainingRoutePath, paint);
-            paint.setColor((ACCENT & 0x00ffffff) | 0x55000000);
+            paint.setColor(BACKGROUND);
             paint.setStrokeWidth(9f / strokeScale);
             canvas.drawPath(remainingRoutePath, paint);
-            paint.setColor(ACCENT);
+            paint.setColor(Color.WHITE);
             paint.setStrokeWidth(5f / strokeScale);
             canvas.drawPath(remainingRoutePath, paint);
             paint.setStrokeJoin(Paint.Join.MITER);
@@ -3003,7 +3001,7 @@ public final class HudActivity extends Activity {
                 paint.setColor(BACKGROUND);
                 paint.setStrokeWidth(12f / strokeScale);
                 canvas.drawCircle(dx, dy, 17f / strokeScale, paint);
-                paint.setColor(ACCENT);
+                paint.setColor(Color.WHITE);
                 paint.setStrokeWidth(5f / strokeScale);
                 canvas.drawCircle(dx, dy, 17f / strokeScale, paint);
             }

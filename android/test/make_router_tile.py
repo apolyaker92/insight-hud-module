@@ -24,24 +24,27 @@ def at(r, c):
     return LAT0 + r * STEP, LON0 + c * STEP
 
 
-def edge(a, b, name):
+def edge(a, b, name, cls=6, flags=0):
     (la, oa), (lb, ob) = at(*a), at(*b)
     length = math.hypot((lb - la) * 1e-7 * 110574, (ob - oa) * 1e-7 * 111320 * math.cos(math.radians(la * 1e-7)))
     cost = length / 11.0
-    return (node(*a), la, oa, node(*b), lb, ob, cost, length, 6, 0,
+    return (node(*a), la, oa, node(*b), lb, ob, cost, length, cls, flags,
             bearing_byte(la, oa, lb, ob), bearing_byte(la, oa, lb, ob), name, [])
 
 
 edges = []
 for r in range(4):
     for c in range(3):
-        edges.append(edge((r, c), (r, c + 1), f"Row {r}"))
-        edges.append(edge((r, c + 1), (r, c), f"Row {r}"))
+        cls = 0 if r == 3 else 6  # Row 3 is a motorway
+        edges.append(edge((r, c), (r, c + 1), f"Row {r}", cls))
+        edges.append(edge((r, c + 1), (r, c), f"Row {r}", cls))
 for c in range(4):
     for r in range(3):
         edges.append(edge((r, c), (r + 1, c), f"Col {c}"))
         if c != 3:
             edges.append(edge((r + 1, c), (r, c), f"Col {c}"))
+# An exit ramp off the Row 3 motorway at column 1, to a new node one row further north: exit 24 toward I 90 W.
+edges.append(edge((3, 1), (4, 1), "24I 90 W", cls=0, flags=1))
 # No going straight north on Col 0 through (2,0) when arriving from (1,0).
 BAN = {(node(1, 0), node(2, 0), node(3, 0))}
 blob = encode_tile(edges, BAN)

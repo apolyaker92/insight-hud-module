@@ -407,8 +407,17 @@ final class Router {
             spec.modifier = modifier(turn);
             spec.street = streetFrom(refs, i);
             spec.atMeters = at;
+            String[] ramp = exit ? tb.exitOf(b) : null;
+            if (ramp != null) spec.instruction = exitInstruction(ramp[0], ramp[1]);
+            if (exit && size < 20) spec.modifier = turn >= 0 ? "slight right" : "slight left"; // an exit never points straight on
             out.add(spec);
         }
+    }
+
+    /** "Take exit 24 toward I 90 W", built from whatever the ramp's signs give. */
+    static String exitInstruction(String number, String toward) {
+        String text = number.isEmpty() ? "Take the exit" : "Take exit " + number;
+        return toward.isEmpty() ? text : text + " toward " + toward;
     }
 
     private static String streetFrom(List<EdgeRef> refs, int from) {

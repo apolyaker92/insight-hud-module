@@ -18,6 +18,8 @@ Tile blob (zlib-deflated, little-endian), once inflated:
     names     B bytes of NUL-terminated UTF-8
 Class: 0 motorway, 1 trunk, 2 primary, 3 secondary, 4 tertiary, 5 unclassified, 6 residential, 7 service.
 Flags: 1 link road, 2 roundabout, 4 toll, 8 destination-only access.
+Exit info: the first edge of a ramp (link road) may carry its exit number and signed destination after the street
+name, in the name string: "nameexit numbertoward". Readers that only want the street use the part before .
 """
 
 import argparse
@@ -96,6 +98,10 @@ def way_info(tags):
     label = (ref or name) if cls <= 2 else (name or ref)
     mph = parse_speed(tags.get("maxspeed"))
     link = highway.endswith("_link")
+    toward = ""
+    if link:
+        toward = (tags.get("destination:ref", "").split(";")[0].strip()
+                  or tags.get("destination", "").split(";")[0].strip())[:30]
     if mph:
         speed = mph * (0.9 if cls <= 3 else 0.8)
     else:
@@ -104,7 +110,7 @@ def way_info(tags):
         | (8 if destination else 0)
     penalty = (SERVICE_PENALTY if cls == 7 else 1.0) * (DESTINATION_PENALTY if destination else 1.0)
     return {"cls": cls, "dir": direction, "name": label[:40], "mps": max(2.0, speed * 0.44704),
-            "flags": flags, "penalty": penalty}
+            "flags": flags, "penalty": penalty, "toward": toward}
 
 
 def bearing_byte(lat1, lon1, lat2, lon2):
@@ -129,6 +135,7 @@ def read_ways(pbf, bounds):
     south, west, north, east = bounds
     ways = []
     signals, stops = set(), set()
+    junctions = {}  # motorway_junction node -> exit number
     bits = osmium.osm.osm_entity_bits
     processor = (osmium.FileProcessor(pbf).with_locations()
                  .with_filter(osmium.filter.EntityFilter(bits.NODE | bits.WAY))
@@ -141,6 +148,8 @@ def read_ways(pbf, bounds):
                 signals.add(item.id)
             elif highway == "stop":
                 stops.add(item.id)
+            elif highway == "motorway_junction":
+                junctions[item.id] = tags.get("ref", "").split(";")[0].strip()[:8]
             continue
         info = way_info(tags)
         if info is None:
@@ -163,7 +172,7 @@ def read_ways(pbf, bounds):
                 inside = True
         if valid and inside and count >= 2:
             ways.append(Way(item.id, refs, lat, lon, info))
-    return ways, signals, stops
+    return ways, signals, stops, junctions
 
 
 def read_restrictions(pbf):
@@ -239,7 +248,8 @@ def matches(wanted, turn):
     return True
 
 
-def build_edges(ways, signals, stops, restrictions):
+def build_edges(ways, signals, stops, restrictions, junctions=None):
+    junctions = junctions or {}
     counts_source = np.concatenate([w.refs for w in ways]) if ways else np.empty(0, dtype=np.int64)
     values, counts = np.unique(counts_source, return_counts=True)
     inter = set(values[counts >= 2].tolist())
@@ -288,8 +298,11 @@ def build_edges(ways, signals, stops, restrictions):
                     shape = interior[::-1]
                     bear_start, bear_end = (in_bearing + 128) & 255, (out_bearing + 128) & 255
                 delay = SIGNAL_DELAY if e in signals else STOP_DELAY if e in stops else 0.0
+                name = info["name"]
+                if info["flags"] & 1 and forward and a == 0 and (junctions.get(s) or info["toward"]):
+                    name = name + "" + junctions.get(s, "") + "" + info["toward"]
                 edges.append((s, s_lat, s_lon, e, e_lat, e_lon, base + delay, length, info["cls"], info["flags"],
-                              bear_start, bear_end, info["name"], shape))
+                              bear_start, bear_end, name, shape))
                 incoming[(way.id, e)].append((s, bear_end))
                 outgoing[(way.id, s)].append((e, bear_start))
                 if s in via_nodes:
@@ -415,11 +428,11 @@ def main():
     parser.add_argument("--bounds", nargs=4, type=float, default=(-90, -180, 90, 180), metavar=("S", "W", "N", "E"))
     args = parser.parse_args()
     started = time.time()
-    ways, signals, stops = read_ways(args.source, args.bounds)
+    ways, signals, stops, junctions = read_ways(args.source, args.bounds)
     print(f"{len(ways)} ways, {len(signals)} signals, {len(stops)} stops  ({time.time() - started:.0f}s)", flush=True)
     restrictions = read_restrictions(args.source)
     print(f"{len(restrictions)} restrictions  ({time.time() - started:.0f}s)", flush=True)
-    edges, banned = build_edges(ways, signals, stops, restrictions)
+    edges, banned = build_edges(ways, signals, stops, restrictions, junctions)
     print(f"{len(edges)} edges, {len(banned)} banned turns  ({time.time() - started:.0f}s)", flush=True)
     write_database(args.output, edges, banned, args.name, args.bounds)
     print(f"{args.output.name}: {args.output.stat().st_size:,} bytes  ({time.time() - started:.0f}s)", flush=True)

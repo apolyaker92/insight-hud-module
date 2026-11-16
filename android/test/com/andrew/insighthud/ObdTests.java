@@ -362,7 +362,7 @@ public final class ObdTests {
 
         // ---- offline router ----
         RouteTile gridTile = RouteTile.decode(java.util.Base64.getDecoder().decode(RouterTestData.TILE));
-        check("tile decodes", gridTile.nodeCount() == 16 && gridTile.edgeCount() == 45);
+        check("tile decodes", gridTile.nodeCount() == 16 && gridTile.edgeCount() == 46);
         check("tile edge names", gridTile.nameOf(0).startsWith("Row") || gridTile.nameOf(0).startsWith("Col"));
         Router router = new Router((level, x, y) -> level == 0 && x == 428 && y == 528 ? gridTile : null);
         double[] n00 = {42.001, -72.999}, n01 = {42.001, -72.998}, n02 = {42.001, -72.997};
@@ -388,6 +388,17 @@ public final class ObdTests {
         Router.Result facingSouth = router.route(midLat, midLon, 180, n31[0], n31[1]);
         check("heading picks the side of a two-way road", facingNorth.error == null && facingSouth.error == null
                 && facingNorth.meters < 200 && facingSouth.meters > facingNorth.meters + 100);
+        double[] ramp = {42.005, -72.998}; // the node at the end of the exit ramp
+        Router.Result exitRoute = router.route(n30[0], n30[1], Double.NaN, ramp[0], ramp[1]);
+        check("route to the ramp is found", exitRoute.error == null && exitRoute.meters > 150);
+        boolean exitStep = false;
+        for (RouteTrack.StepSpec step : exitRoute.steps) {
+            if ("Take exit 24 toward I 90 W".equals(step.instruction) && "left".equals(step.modifier)) exitStep = true;
+        }
+        check("leaving a motorway by a ramp says to take the exit", exitStep);
+        check("exit wording with no number", "Take the exit toward I 87".equals(Router.exitInstruction("", "I 87"))
+                && "Take exit 9".equals(Router.exitInstruction("9", "")));
+        check("street name excludes exit details", !gridTile.nameOf(0).contains(""));
         Router.Result nowhere = router.route(43.0, -72.0, Double.NaN, n31[0], n31[1]);
         check("no road near the start is reported", "No road near the start".equals(nowhere.error));
         check("a route to the same place is tiny", router.route(n01[0], n01[1], Double.NaN, n01[0], n01[1]).meters < 5

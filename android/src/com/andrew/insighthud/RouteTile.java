@@ -115,7 +115,24 @@ final class RouteTile {
         return low;
     }
 
+    /** The street name of an edge (the part of its name string before any exit details). */
     String nameOf(int edge) {
+        String full = rawName(edge);
+        int cut = full.indexOf('');
+        return cut < 0 ? full : full.substring(0, cut);
+    }
+
+    /** The exit number and signed destination of a ramp's first edge, as {number, toward}, or null. */
+    String[] exitOf(int edge) {
+        String full = rawName(edge);
+        int cut = full.indexOf('');
+        if (cut < 0) return null;
+        String[] parts = full.substring(cut + 1).split("", -1);
+        String number = parts.length > 0 ? parts[0] : "", toward = parts.length > 1 ? parts[1] : "";
+        return number.isEmpty() && toward.isEmpty() ? null : new String[]{number, toward};
+    }
+
+    private String rawName(int edge) {
         int offset = name[edge];
         if (offset < 0) return "";
         int end = offset;

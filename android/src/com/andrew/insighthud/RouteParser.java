@@ -45,6 +45,9 @@ final class RouteParser {
             spec.street = step.optString("street", "");
             spec.type = step.optString("type", "");
             spec.modifier = step.optString("modifier", "");
+            if (spec.instruction.isEmpty() && (step.has("exit") || step.has("toward"))) {
+                spec.instruction = Router.exitInstruction(step.optString("exit", ""), step.optString("toward", ""));
+            }
             if (step.has("at_m")) spec.atMeters = step.getDouble("at_m");
             JSONArray where = step.optJSONArray("location");
             if (where != null && where.length() >= 2) {
@@ -96,6 +99,11 @@ final class RouteParser {
                         spec.lat = where.getDouble(1);
                     }
                 }
+                if (spec.instruction.isEmpty() && spec.type.equals("off ramp")) {
+                    String exit = step.optString("exits", "").split(";")[0].trim();
+                    String toward = signedDestination(step.optString("destinations", ""));
+                    if (!exit.isEmpty() || !toward.isEmpty()) spec.instruction = Router.exitInstruction(exit, toward);
+                }
                 if (Double.isNaN(spec.lat)) spec.atMeters = running;
                 running += step.optDouble("distance", 0);
                 specs.add(spec);
@@ -123,5 +131,13 @@ final class RouteParser {
             lon[i] = points.getJSONArray(i).getDouble(1);
         }
         return new double[][]{lat, lon};
+    }
+
+    /** The first signed destination of an OSRM ramp ("I 90 East: Boston, Worcester"): its road number if given. */
+    static String signedDestination(String destinations) {
+        String first = destinations.split(",")[0].trim();
+        int colon = first.indexOf(':');
+        String text = colon > 0 ? first.substring(0, colon).trim() : first;
+        return text.length() > 30 ? text.substring(0, 30) : text;
     }
 }
