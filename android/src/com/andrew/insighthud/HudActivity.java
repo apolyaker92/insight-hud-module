@@ -104,6 +104,27 @@ public final class HudActivity extends Activity {
     private final Runnable resumeRouteTimeout = () -> answerResumeRoute(false);
     private long lastRerouteAt;
 
+    // Quick config panel: hold F1 to open it. F1 picks the next row, F2 changes it, F3 closes; it also closes when idle.
+    private static final int F1_HOLD_MS = 600, QUICK_IDLE_MS = 12_000, QUICK_REFRESH_MS = 2000;
+    private boolean quickOpen;
+    private int quickRow;
+    private List<String[]> quickHealth = new ArrayList<>(); // {label, value, "warn" or ""}
+    private boolean f1Down, f1HoldFired;
+    private final Runnable f1Hold = () -> {
+        f1HoldFired = true;
+        if (quickOpen) closeQuick();
+        else openQuick();
+    };
+    private final Runnable quickIdle = this::closeQuick;
+    private final Runnable quickTick = new Runnable() {
+        @Override public void run() {
+            if (!quickOpen) return;
+            refreshQuick();
+            hud.invalidate();
+            main.postDelayed(this, QUICK_REFRESH_MS);
+        }
+    };
+
     private String navToken() {
         String token = preferences.getString("navToken", null);
         if (token == null) token = newNavToken();
@@ -757,6 +778,7 @@ public final class HudActivity extends Activity {
             navAdvertisement = null;
         }
         routing.shutdownNow();
+        main.removeCallbacks(f1Hold);
         if (routeDb != null) routeDb.close();
         unregisterReceiver(batteryReceiver);
         super.onDestroy();
@@ -1685,9 +1707,13 @@ public final class HudActivity extends Activity {
             }
             return true;
         }
+        if (keyCode == KeyEvent.KEYCODE_F1) return handleF1(event);
+        if (quickOpen && (keyCode == KeyEvent.KEYCODE_F2 || keyCode == KeyEvent.KEYCODE_F3 || keyCode == KeyEvent.KEYCODE_F4)) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) quickKey(keyCode);
+            return true;
+        }
         int control;
         switch (event.getKeyCode()) {
-            case KeyEvent.KEYCODE_F1: control = 4; break;
             case KeyEvent.KEYCODE_F2: control = 6; break;
             case KeyEvent.KEYCODE_F3: control = 7; break;
             case KeyEvent.KEYCODE_F4: control = 10; break;
@@ -1774,6 +1800,135 @@ public final class HudActivity extends Activity {
         fullMap = full;
         preferences.edit().putBoolean("mapPreview", mapPreview).putBoolean("fullMap", fullMap).apply();
         updateMap();
+    }
+
+    /** F1: a tap changes the view (or moves down the quick panel), a hold opens or closes the quick panel. */
+    private boolean handleF1(KeyEvent event) {
+        boolean usable = hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD
+                && (startupStartedAt == 0 || startupClock(SystemClock.uptimeMillis()) >= STARTUP_DURATION_MS);
+        if (!usable) return true;
+        if (openPlaces != null) { // the saved places list uses F1 to choose, straight away
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) chooseSavedPlace();
+            return true;
+        }
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            if (event.getRepeatCount() == 0) {
+                f1Down = true;
+                f1HoldFired = false;
+                main.removeCallbacks(f1Hold);
+                main.postDelayed(f1Hold, F1_HOLD_MS);
+            }
+        } else if (event.getAction() == KeyEvent.ACTION_UP) {
+            main.removeCallbacks(f1Hold);
+            if (f1Down && !f1HoldFired) {
+                if (quickOpen) quickKey(KeyEvent.KEYCODE_F1);
+                else activateControl(4);
+            }
+            f1Down = false;
+        }
+        return true;
+    }
+
+    private void openQuick() {
+        quickOpen = true;
+        quickRow = 0;
+        refreshQuick();
+        touchQuick();
+        main.removeCallbacks(quickTick);
+        main.postDelayed(quickTick, QUICK_REFRESH_MS);
+        playSound(switchSoundId, 0.42f, SoundPolicy.Kind.UI);
+        hud.invalidate();
+    }
+
+    private void closeQuick() {
+        if (!quickOpen) return;
+        quickOpen = false;
+        main.removeCallbacks(quickIdle);
+        main.removeCallbacks(quickTick);
+        playSound(switchSoundId, 0.3f, SoundPolicy.Kind.UI);
+        hud.invalidate();
+    }
+
+    private void touchQuick() {
+        main.removeCallbacks(quickIdle);
+        main.postDelayed(quickIdle, QUICK_IDLE_MS);
+    }
+
+    private void quickKey(int keyCode) {
+        touchQuick();
+        if (keyCode == KeyEvent.KEYCODE_F1) {
+            quickRow = (quickRow + 1) % 2;
+            playSound(switchSoundId, 0.3f, SoundPolicy.Kind.UI);
+        } else if (keyCode == KeyEvent.KEYCODE_F3) {
+            closeQuick();
+            return;
+        } else if (keyCode == KeyEvent.KEYCODE_F4 || quickRow == 0) {
+            activateControl(2); // brightness
+        } else {
+            preferences.edit().putInt("palette", (preferences.getInt("palette", 0) + 1) % PALETTE_NAMES.length).apply();
+            hud.applyPalette();
+            playSound(switchSoundId, 0.42f, SoundPolicy.Kind.UI);
+        }
+        hud.invalidate();
+    }
+
+    /** Phone and keyboard health for the quick panel, worked out here so drawing stays cheap. */
+    private void refreshQuick() {
+        List<String[]> rows = new ArrayList<>();
+        boolean low = battery >= 0 && battery < 20 && !powered;
+        rows.add(new String[]{"PHONE BATTERY", battery < 0 ? "--" : battery + "%" + (powered ? "  CHARGING" : ""),
+                low ? "warn" : ""});
+        float c = batteryTemperature;
+        String[] status = {"", "  WARM", "  HOT", "  HOT", "  CRITICAL", "  CRITICAL", "  CRITICAL"};
+        int level = Math.max(0, Math.min(status.length - 1, systemThermalStatus));
+        rows.add(new String[]{"PHONE TEMP", Math.round(c) + " C / " + Math.round(c * 9 / 5 + 32) + " F" + status[level],
+                c >= 40 || systemThermalStatus >= PowerManager.THERMAL_STATUS_MODERATE ? "warn" : ""});
+        rows.addAll(peripheralRows());
+        quickHealth = rows;
+    }
+
+    /** One row per attached physical keyboard, with its battery where Android can read it. */
+    private List<String[]> peripheralRows() {
+        List<String[]> rows = new ArrayList<>();
+        java.util.Map<String, Integer> bluetoothLevels = bondedBatteryLevels();
+        for (int id : InputDevice.getDeviceIds()) {
+            InputDevice device = InputDevice.getDevice(id);
+            if (device == null || device.isVirtual() || device.getKeyboardType() != InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                continue;
+            }
+            int percent = -1;
+            if (Build.VERSION.SDK_INT >= 31) {
+                android.hardware.BatteryState state = device.getBatteryState();
+                if (state != null && state.isPresent() && !Float.isNaN(state.getCapacity())) {
+                    percent = Math.round(state.getCapacity() * 100f);
+                }
+            }
+            if (percent < 0 && bluetoothLevels.containsKey(device.getName())) percent = bluetoothLevels.get(device.getName());
+            if (percent < 0 && bluetoothLevels.size() == 1) percent = bluetoothLevels.values().iterator().next();
+            String name = device.getName() == null ? "KEYBOARD" : device.getName().toUpperCase(Locale.US);
+            if (name.length() > 22) name = name.substring(0, 22);
+            rows.add(new String[]{name, percent >= 0 ? percent + "%" : "CONNECTED", percent >= 0 && percent < 20 ? "warn" : ""});
+            if (rows.size() >= 2) break;
+        }
+        if (rows.isEmpty()) rows.add(new String[]{"KEYBOARD", "NOT CONNECTED", ""});
+        return rows;
+    }
+
+    /** Battery levels of paired Bluetooth keyboards, by name. The call is hidden API, so it may be refused. */
+    private java.util.Map<String, Integer> bondedBatteryLevels() {
+        java.util.Map<String, Integer> levels = new java.util.HashMap<>();
+        try {
+            if (bluetooth == null || !hasBluetoothPermission()) return levels;
+            for (BluetoothDevice device : bluetooth.getBondedDevices()) {
+                if (device.getBluetoothClass() == null || device.getBluetoothClass().getMajorDeviceClass()
+                        != android.bluetooth.BluetoothClass.Device.Major.PERIPHERAL) continue;
+                int level = (Integer) BluetoothDevice.class.getMethod("getBatteryLevel").invoke(device);
+                if (level >= 0 && level <= 100) levels.put(device.getName(), level);
+            }
+        } catch (ReflectiveOperationException | RuntimeException refused) {
+            // No hidden API here: the keyboard just shows as connected.
+        }
+        return levels;
     }
 
     private void activateControl(int control) {
@@ -2015,6 +2170,7 @@ public final class HudActivity extends Activity {
                     postInvalidateDelayed(100);
                 } else if (openPlaces != null) drawSavedPlaces(canvas);
             }
+            if (quickOpen && !thermalHold && !shuttingDown && !starting) drawQuickConfig(canvas);
             boolean alertHeld = thermalHold || shuttingDown || starting || startupPending;
             Alerts.Alert alert = alerts.tick(now, alertHeld);
             if (alert != null) {
@@ -2126,6 +2282,44 @@ public final class HudActivity extends Activity {
                 if (row < VISIBLE_PLACES && index < openPlaces.length()) selectedPlace = index;
             }
             invalidate();
+        }
+
+        /** The quick panel: big print for a glance while driving. */
+        private void drawQuickConfig(Canvas canvas) {
+            float bottom = 552 + extra();
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(ground(250));
+            canvas.drawRect(41, 35, 1239, bottom - 1, paint);
+            border(canvas, 40, 34, 1240, bottom);
+            text(canvas, "> QUICK CONFIG", 70, 72, 30, ACCENT, true);
+            text(canvas, "HOLD F1 TO CLOSE", 1210, 72, 18, MUTED, false, Paint.Align.RIGHT);
+            line(canvas, 40, 88, 1240, 88, LINE);
+            line(canvas, 640, 112, 640, bottom - 70, LINE);
+            String[] names = {"BRIGHTNESS", "COLOR"};
+            String[] values = {BRIGHTNESS_NAMES[brightnessMode],
+                    PALETTE_NAMES[Math.max(0, Math.min(PALETTE_NAMES.length - 1, preferences.getInt("palette", 0)))]};
+            for (int i = 0; i < 2; i++) {
+                float top = 126 + i * 128;
+                boolean selected = quickRow == i;
+                if (selected) {
+                    paint.setStyle(Paint.Style.FILL);
+                    paint.setColor(ACCENT);
+                    canvas.drawRect(70, top, 600, top + 104, paint);
+                } else {
+                    border(canvas, 70, top, 600, top + 104);
+                }
+                text(canvas, names[i], 94, top + 36, 22, selected ? BACKGROUND : MUTED, false);
+                text(canvas, values[i], 94, top + 88, 50, selected ? BACKGROUND : ACCENT, true);
+            }
+            text(canvas, "DEVICE HEALTH", 680, 146, 22, MUTED, false);
+            float y = 190;
+            for (String[] row : quickHealth) {
+                if (y > bottom - 90) break;
+                text(canvas, row[0], 680, y, 20, MUTED, false);
+                text(canvas, row[1], 680, y + 44, 38, row[2].isEmpty() ? ACCENT : 0xFFFF8A45, true);
+                y += 86;
+            }
+            text(canvas, "F1 NEXT     F2 CHANGE     F3 CLOSE", 640, bottom - 28, 22, MUTED, false, Paint.Align.CENTER);
         }
 
         /** A banner that takes over the header: calm for info, flashing for warnings and critical alerts. */
