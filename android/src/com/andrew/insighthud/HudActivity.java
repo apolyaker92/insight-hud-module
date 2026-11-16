@@ -456,6 +456,9 @@ public final class HudActivity extends Activity {
     private LocationManager locationManager;
     private Location gpsFix;
     private Location lastMapFix;
+    // Between the once-a-second fixes the marker is projected along the car's course and speed.
+    private final PositionEstimator estimator = new PositionEstimator();
+    private final Location estimatedFix = new Location("estimate");
     private float gpsCourse = Float.NaN;
     private boolean gpsRegistered;
     private boolean gpsUnavailable;
@@ -599,6 +602,9 @@ public final class HudActivity extends Activity {
             if (location.hasBearing() && location.hasSpeed() && location.getSpeed() >= 2f) {
                 gpsCourse = location.getBearing();
             }
+            float fixSpeed = location.hasSpeed() ? location.getSpeed() : derivedSpeedMps;
+            estimator.fix(location.getLatitude(), location.getLongitude(), fixSpeed, gpsCourse,
+                    location.getElapsedRealtimeNanos() / 1_000_000L, SystemClock.elapsedRealtime());
             main.removeCallbacks(expireGpsFix);
             main.postDelayed(expireGpsFix, GPS_STALE_MS - Math.max(0, age));
             refreshMapTiles();
@@ -1296,8 +1302,12 @@ public final class HudActivity extends Activity {
     }
 
     private Location mapPosition(OfflineRoadMap.Region region) {
-        return lastMapFix != null && region.contains(lastMapFix.getLatitude(), lastMapFix.getLongitude())
-                ? lastMapFix : null;
+        if (lastMapFix == null || !region.contains(lastMapFix.getLatitude(), lastMapFix.getLongitude())) return null;
+        double[] estimate = estimator.at(SystemClock.elapsedRealtime());
+        if (estimate == null) return lastMapFix;
+        estimatedFix.setLatitude(estimate[0]);
+        estimatedFix.setLongitude(estimate[1]);
+        return estimatedFix;
     }
 
     private boolean fixInRegion(OfflineRoadMap.Region region) {
@@ -2189,6 +2199,7 @@ public final class HudActivity extends Activity {
             else if (thermalLevel == THERMAL_NORMAL && mapPreview && foreground && hasWindowFocus()) {
                 if (now - cameraStartedAt < cameraDuration || now - rangeStartedAt < 500
                         || (lockStartedAt != 0 && now - lockStartedAt < TARGET_CAPTION_MS)) postInvalidateDelayed(32);
+                else if (estimator.moving(SystemClock.elapsedRealtime())) postInvalidateDelayed(50);
                 else if (demo && powered) postInvalidateDelayed(100);
             }
         }

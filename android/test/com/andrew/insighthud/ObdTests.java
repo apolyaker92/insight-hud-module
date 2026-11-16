@@ -393,6 +393,43 @@ public final class ObdTests {
         check("a route to the same place is tiny", router.route(n01[0], n01[1], Double.NaN, n01[0], n01[1]).meters < 5
                 || router.route(n01[0], n01[1], Double.NaN, n01[0], n01[1]).error != null);
 
+        // ---- position estimator ----
+        PositionEstimator est = new PositionEstimator();
+        check("no estimate before a fix", est.at(0) == null && !est.moving(0));
+        double lat0 = 42.0, lon0 = -73.0;
+        est.fix(lat0, lon0, 20, 90, 0, 0); // 20 m/s due east
+        double[] half = est.at(500);
+        check("projects east at speed", Math.abs(Router.meters(lat0, lon0, half[0], half[1]) - 10) < 0.3 && half[1] > lon0);
+        check("stays on its latitude going east", Math.abs(half[0] - lat0) < 1e-7);
+        check("projection is capped at three seconds", Math.abs(Router.meters(lat0, lon0, est.at(9000)[0], est.at(9000)[1]) - 60) < 0.5);
+        check("moving until the projection runs out", est.moving(1000) && !est.moving(9000));
+        // The next fix is 25 m along (the projection said 20 m): the marker must not jump.
+        double[] before = est.at(1000);
+        est.fix(lat0, lon0 + 25 / (111_320 * Math.cos(Math.toRadians(lat0))), 20, 90, 1000, 1000);
+        double[] after = est.at(1000);
+        check("no jump when a fix lands", Router.meters(before[0], before[1], after[0], after[1]) < 0.3);
+        double[] settled = est.at(1000 + 700);
+        double fixLon = lon0 + 25 / (111_320 * Math.cos(Math.toRadians(lat0)));
+        double expected = 25 + 20 * 0.7;
+        check("it settles onto the new projection", Math.abs(Router.meters(lat0, lon0, settled[0], settled[1]) - expected) < 0.5 && settled[1] > fixLon);
+        // A real jump snaps.
+        est.fix(lat0 + 0.01, lon0, 20, 90, 2000, 2000);
+        check("a big jump snaps", Router.meters(lat0 + 0.01, lon0, est.at(2000)[0], est.at(2000)[1]) < 0.5);
+        PositionEstimator slow = new PositionEstimator();
+        slow.fix(lat0, lon0, 0.5, 90, 0, 0);
+        check("a slow car stays put", slow.at(2000)[0] == lat0 && slow.at(2000)[1] == lon0 && !slow.moving(500));
+        PositionEstimator noCourse = new PositionEstimator();
+        noCourse.fix(lat0, lon0, 20, Double.NaN, 0, 0);
+        check("no course means no projection", noCourse.at(2000)[1] == lon0);
+        PositionEstimator north = new PositionEstimator();
+        north.fix(lat0, lon0, 10, 0, 0, 0);
+        check("due north raises latitude", Math.abs(Router.meters(lat0, lon0, north.at(2000)[0], north.at(2000)[1]) - 20) < 0.3
+                && north.at(2000)[0] > lat0);
+        // A fix that is already old (taken 500 ms ago) is projected from when it was taken.
+        PositionEstimator old = new PositionEstimator();
+        old.fix(lat0, lon0, 20, 90, 0, 500);
+        check("an old fix is projected over its age", Math.abs(Router.meters(lat0, lon0, old.at(500)[0], old.at(500)[1]) - 10) < 0.3);
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }
