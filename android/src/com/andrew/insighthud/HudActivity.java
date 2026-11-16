@@ -1817,6 +1817,9 @@ public final class HudActivity extends Activity {
                 f1HoldFired = false;
                 main.removeCallbacks(f1Hold);
                 main.postDelayed(f1Hold, F1_HOLD_MS);
+            } else if (f1Down && !f1HoldFired) { // the keyboard's own auto-repeat means it is being held
+                main.removeCallbacks(f1Hold);
+                f1Hold.run();
             }
         } else if (event.getAction() == KeyEvent.ACTION_UP) {
             main.removeCallbacks(f1Hold);
@@ -2288,7 +2291,7 @@ public final class HudActivity extends Activity {
         private void drawQuickConfig(Canvas canvas) {
             float bottom = 552 + extra();
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(ground(250));
+            paint.setColor(ground(255));
             canvas.drawRect(41, 35, 1239, bottom - 1, paint);
             border(canvas, 40, 34, 1240, bottom);
             text(canvas, "> QUICK CONFIG", 70, 72, 30, ACCENT, true);
