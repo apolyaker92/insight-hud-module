@@ -174,6 +174,72 @@ final class OfflineRoadMap {
     Scene scene() { return scene; }
     boolean failed() { return failed || sceneFailed; }
 
+    /** A fuel stop from the pack. */
+    static final class Fuel {
+        final String name;
+        final double lat, lon, meters;
+
+        Fuel(String name, double lat, double lon, double meters) {
+            this.name = name == null ? "" : name;
+            this.lat = lat;
+            this.lon = lon;
+            this.meters = meters;
+        }
+    }
+
+    static double lonOfTile(double x) {
+        return x / WORLD * 360 - 180;
+    }
+
+    static double latOfTile(double y) {
+        return Math.toDegrees(Math.atan(Math.sinh(Math.PI * (1 - 2 * y / WORLD))));
+    }
+
+    /** The nearest few fuel stops to a point, nearest first, found off the main thread (empty when none). */
+    void nearestFuel(double latitude, double longitude, int count, Consumer<List<Fuel>> done) {
+        if (closed) {
+            done.accept(new ArrayList<>());
+            return;
+        }
+        worker.execute(() -> {
+            List<Fuel> found = new ArrayList<>();
+            try {
+                found = readFuel(latitude, longitude, count);
+            } catch (RuntimeException error) {
+                Log.w(TAG, "Could not look up fuel", error);
+            }
+            List<Fuel> result = found;
+            main.post(() -> done.accept(result));
+        });
+    }
+
+    private List<Fuel> readFuel(double latitude, double longitude, int count) {
+        List<Fuel> stops = new ArrayList<>();
+        double fx = tileX(longitude), fy = tileY(latitude);
+        int tx = (int) Math.floor(fx), ty = (int) Math.floor(fy);
+        Pack pack = null;
+        for (Pack candidate : new Pack[]{local, wide}) {
+            if (candidate != null && candidate.info && candidate.covers(tx, ty, 1)) {
+                pack = candidate;
+                break;
+            }
+        }
+        if (pack == null) return stops;
+        double meters = RoadLookup.metersPerTile(latitude, WORLD);
+        String[] box = {String.valueOf(tx - FUEL_RADIUS), String.valueOf(tx + FUEL_RADIUS),
+                String.valueOf(ty - FUEL_RADIUS), String.valueOf(ty + FUEL_RADIUS)};
+        try (Cursor cursor = pack.database.rawQuery("SELECT name, x, y FROM pois WHERE kind = 1 "
+                + "AND tx BETWEEN ? AND ? AND ty BETWEEN ? AND ?", box)) {
+            while (cursor.moveToNext()) {
+                double x = cursor.getDouble(1), y = cursor.getDouble(2);
+                double distance = Math.hypot(x - fx, y - fy) * meters;
+                stops.add(new Fuel(cursor.getString(0), latOfTile(y), lonOfTile(x), distance));
+            }
+        }
+        stops.sort((a, b) -> Double.compare(a.meters, b.meters));
+        return stops.size() > count ? new ArrayList<>(stops.subList(0, count)) : stops;
+    }
+
     static double tileX(double longitude) {
         return (longitude + 180) / 360 * WORLD;
     }

@@ -441,6 +441,27 @@ public final class ObdTests {
         old.fix(lat0, lon0, 20, 90, 0, 500);
         check("an old fix is projected over its age", Math.abs(Router.meters(lat0, lon0, old.at(500)[0], old.at(500)[1]) - 10) < 0.3);
 
+        // ---- what comes after the next step ----
+        java.util.List<RouteTrack.StepSpec> twoSteps = new java.util.ArrayList<>();
+        for (double metres : new double[]{300, 500}) {
+            RouteTrack.StepSpec given2 = new RouteTrack.StepSpec();
+            given2.atMeters = metres;
+            given2.modifier = metres == 300 ? "left" : "right";
+            given2.street = metres == 300 ? "First St" : "Second St";
+            twoSteps.add(given2);
+        }
+        RouteTrack chain = lRoute(twoSteps, 0);
+        check("the next step is the first one", chain.nextStep().atMeters == 300);
+        check("the step after it is the second", chain.stepAfterNext() != null && chain.stepAfterNext().atMeters == 500
+                && chain.stepAfterNext().kind == RouteTrack.RIGHT);
+        check("the gap between them", Math.abs(chain.metersBetweenNextAndAfter() - 200) < 1);
+        check("distance counts down with extra travel", Math.abs(chain.metersToNext(40) - (chain.metersToNext() - 40)) < 0.01
+                && chain.metersToNext(10_000) == 0);
+        move(chain, 400 - 100, 0, 1000); // already past the first turn's position at 300? no: still before it
+        move(chain, 350, 0, 2000);
+        check("past the first turn the next is the second", chain.nextStep().atMeters == 500);
+        check("after the last turn only the arrival follows", chain.stepAfterNext().kind == RouteTrack.ARRIVE);
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }

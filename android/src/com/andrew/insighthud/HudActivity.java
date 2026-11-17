@@ -109,6 +109,7 @@ public final class HudActivity extends Activity {
     private boolean quickOpen;
     private int quickRow;
     private List<String[]> quickHealth = new ArrayList<>(); // {label, value, "warn" or ""}
+    private String quickGasNote = "";
     private boolean f1Down, f1HoldFired;
     private final Runnable f1Hold = () -> {
         f1HoldFired = true;
@@ -368,6 +369,17 @@ public final class HudActivity extends Activity {
             clearResumeRoute();
             hud.invalidate();
         }
+    }
+
+    private static final double THEN_METERS = 450; // show "THEN ..." when the next two manoeuvres are this close
+
+    /** How far the car has probably moved since the last fix, so distances count down smoothly between fixes. */
+    private double navAhead() {
+        long now = SystemClock.elapsedRealtime();
+        if (lastMapFix == null || !estimator.moving(now)) return 0;
+        double[] estimate = estimator.at(now);
+        if (estimate == null) return 0;
+        return Math.min(80, Router.meters(lastMapFix.getLatitude(), lastMapFix.getLongitude(), estimate[0], estimate[1]));
     }
 
     /** Moves the car along the route on each GPS fix and raises the arrival and off-route banners. */
@@ -1845,6 +1857,7 @@ public final class HudActivity extends Activity {
     private void openQuick() {
         quickOpen = true;
         quickRow = 0;
+        quickGasNote = "";
         refreshQuick();
         touchQuick();
         main.removeCallbacks(quickTick);
@@ -1870,18 +1883,90 @@ public final class HudActivity extends Activity {
     private void quickKey(int keyCode) {
         touchQuick();
         if (keyCode == KeyEvent.KEYCODE_F1) {
-            quickRow = (quickRow + 1) % 2;
+            quickRow = (quickRow + 1) % 3;
             playSound(switchSoundId, 0.3f, SoundPolicy.Kind.UI);
         } else if (keyCode == KeyEvent.KEYCODE_F3) {
             closeQuick();
             return;
         } else if (keyCode == KeyEvent.KEYCODE_F4 || quickRow == 0) {
             activateControl(2); // brightness
+        } else if (quickRow == 2) {
+            playSound(switchSoundId, 0.42f, SoundPolicy.Kind.UI);
+            routeToNearestGas();
         } else {
             preferences.edit().putInt("palette", (preferences.getInt("palette", 0) + 1) % PALETTE_NAMES.length).apply();
             hud.applyPalette();
             playSound(switchSoundId, 0.42f, SoundPolicy.Kind.UI);
         }
+        hud.invalidate();
+    }
+
+    /**
+     * Routes to the fuel stop that takes the least time to reach, out of the nearest few in the map pack. Works on the
+     * HUD alone, so it needs the routing data and a GPS fix; the panel says what is missing.
+     */
+    private void routeToNearestGas() {
+        Location from = gpsFix;
+        if (from == null) {
+            quickGasNote = "NO GPS FIX";
+            return;
+        }
+        RouteDatabase graph = routeDatabase();
+        if (graph == null) {
+            quickGasNote = "NO ROUTE DATA";
+            return;
+        }
+        if (routingBusy) {
+            quickGasNote = "BUSY";
+            return;
+        }
+        quickGasNote = "SEARCHING";
+        double fromLat = from.getLatitude(), fromLon = from.getLongitude();
+        double heading = from.hasBearing() && from.hasSpeed() && from.getSpeed() > 2.5 ? from.getBearing() : Double.NaN;
+        roadMap.nearestFuel(fromLat, fromLon, 4, stations -> {
+            if (stations.isEmpty()) {
+                quickGasNote = "NONE NEARBY";
+                hud.invalidate();
+                return;
+            }
+            if (routingBusy) {
+                quickGasNote = "BUSY";
+                hud.invalidate();
+                return;
+            }
+            routingBusy = true;
+            routing.execute(() -> {
+                Router.Result best = null;
+                OfflineRoadMap.Fuel pick = null;
+                for (OfflineRoadMap.Fuel station : stations) {
+                    try {
+                        Router.Result result = new Router(graph).route(fromLat, fromLon, heading, station.lat, station.lon);
+                        if (result.error == null && (best == null || result.seconds < best.seconds)) {
+                            best = result;
+                            pick = station;
+                        }
+                    } catch (RuntimeException | OutOfMemoryError broken) {
+                        android.util.Log.w("HudRoute", "Fuel route failed", broken);
+                    }
+                }
+                Router.Result chosen = best;
+                OfflineRoadMap.Fuel station = pick;
+                main.post(() -> {
+                    routingBusy = false;
+                    if (chosen == null) {
+                        quickGasNote = "NO ROUTE";
+                        raiseAlert("NO ROUTE TO GAS", Alerts.WARN);
+                        hud.invalidate();
+                        return;
+                    }
+                    String name = station.name.isEmpty() ? "GAS STATION" : station.name;
+                    startRoute(new RouteTrack(name, chosen.lat, chosen.lon, chosen.steps, chosen.seconds), true);
+                    navGoal = new double[]{station.lat, station.lon};
+                    navGoalName = name;
+                    closeQuick();
+                });
+            });
+        });
         hud.invalidate();
     }
 
@@ -2309,18 +2394,19 @@ public final class HudActivity extends Activity {
             text(canvas, "HOLD F1 TO CLOSE", 1210, 72, 18, MUTED, false, Paint.Align.RIGHT);
             line(canvas, 40, 88, 1240, 88, LINE);
             line(canvas, 640, 112, 640, bottom - 70, LINE);
-            String[] names = {"BRIGHTNESS", "COLOR"};
+            String[] names = {"BRIGHTNESS", "COLOR", "NEAREST GAS"};
             String[] values = {BRIGHTNESS_NAMES[brightnessMode],
-                    PALETTE_NAMES[Math.max(0, Math.min(PALETTE_NAMES.length - 1, preferences.getInt("palette", 0)))]};
-            for (int i = 0; i < 2; i++) {
-                float top = 126 + i * 128;
+                    PALETTE_NAMES[Math.max(0, Math.min(PALETTE_NAMES.length - 1, preferences.getInt("palette", 0)))],
+                    quickGasNote.isEmpty() ? "GO" : quickGasNote};
+            for (int i = 0; i < 3; i++) {
+                float top = 118 + i * 124;
                 boolean selected = quickRow == i;
                 if (selected) {
                     paint.setStyle(Paint.Style.FILL);
                     paint.setColor(ACCENT);
-                    canvas.drawRect(70, top, 600, top + 104, paint);
+                    canvas.drawRect(70, top, 600, top + 106, paint);
                 } else {
-                    border(canvas, 70, top, 600, top + 104);
+                    border(canvas, 70, top, 600, top + 106);
                 }
                 text(canvas, names[i], 94, top + 36, 22, selected ? BACKGROUND : MUTED, false);
                 text(canvas, values[i], 94, top + 88, 50, selected ? BACKGROUND : ACCENT, true);
@@ -2333,7 +2419,8 @@ public final class HudActivity extends Activity {
                 text(canvas, row[1], 680, y + 44, 38, row[2].isEmpty() ? ACCENT : 0xFFFF8A45, true);
                 y += 86;
             }
-            text(canvas, "F1 NEXT     F2 CHANGE     F3 CLOSE", 640, bottom - 28, 22, MUTED, false, Paint.Align.CENTER);
+            text(canvas, quickRow == 2 ? "F1 NEXT     F2 GO     F3 CLOSE" : "F1 NEXT     F2 CHANGE     F3 CLOSE",
+                    640, bottom - 28, 22, MUTED, false, Paint.Align.CENTER);
         }
 
         /** A banner that takes over the header: calm for info, flashing for warnings and critical alerts. */
@@ -3020,33 +3107,42 @@ public final class HudActivity extends Activity {
             RouteTrack.Step next = route.nextStep();
             String what = next == null ? "ARRIVE" : next.label();
             if (what.length() > 30) what = what.substring(0, 30);
-            return navDistance(route.metersToNext()) + "  " + what;
+            return navDistance(route.metersToNext(navAhead())) + "  " + what;
         }
 
         /** The turn strip over the map: arrow, distance to the next manoeuvre, what to do, and the way left. */
         private void drawNavStrip(Canvas canvas) {
             RouteTrack route = nav;
             float left = mapLeft() + 8, top = mapTop() + 8;
-            float width = fullMapActive() ? 540 : 440, height = 108;
+            RouteTrack.Step following = route.stepAfterNext();
+            boolean soon = following != null && route.metersBetweenNextAndAfter() <= THEN_METERS
+                    && route.nextStep() != null && following.kind != RouteTrack.ARRIVE;
+            float width = fullMapActive() ? 540 : 440, height = soon ? 132 : 108;
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(ground(0xF5));
             canvas.drawRect(left, top, left + width, top + height, paint);
             border(canvas, left, top, left + width, top + height);
             RouteTrack.Step next = route.nextStep();
             drawTurnArrow(canvas, left + 56, top + 56, next == null ? RouteTrack.ARRIVE : next.kind);
-            text(canvas, navDistance(route.metersToNext()), left + 112, top + 50, 42, ACCENT, true);
+            double ahead = navAhead();
+            text(canvas, navDistance(route.metersToNext(ahead)), left + 112, top + 50, 42, ACCENT, true);
             String what = next == null ? "ARRIVE" + (route.name.isEmpty() ? "" : " AT " + route.name.toUpperCase(Locale.US))
                     : next.label();
             int room = (int) ((width - 124) / 10);
             text(canvas, what.length() > room ? what.substring(0, room) : what, left + 112, top + 76, 17, MUTED, false);
             double seconds = route.remainingSeconds();
-            String left2 = String.format(Locale.US, "%.1f MI", route.remainingMeters() / 1609.344);
+            String left2 = String.format(Locale.US, "%.1f MI", Math.max(0, route.remainingMeters() - ahead) / 1609.344);
             if (!Double.isNaN(seconds)) {
                 String pattern = android.text.format.DateFormat.is24HourFormat(HudActivity.this) ? "HH:mm" : "h:mm a";
                 left2 += "   " + Math.max(1, Math.round(seconds / 60)) + " MIN   ETA "
                         + new SimpleDateFormat(pattern, Locale.US).format(new Date(System.currentTimeMillis() + (long) (seconds * 1000)));
             }
             text(canvas, left2, left + 112, top + 98, 14, MUTED, false);
+            if (soon) {
+                String then = "THEN " + following.label();
+                int thenRoom = (int) ((width - 24) / 8.4);
+                text(canvas, then.length() > thenRoom ? then.substring(0, thenRoom) : then, left + 14, top + 122, 14, ACCENT, false);
+            }
         }
 
         /** A bent arrow for a turn, a ring for a roundabout, a U for a U-turn, a target for arriving. */

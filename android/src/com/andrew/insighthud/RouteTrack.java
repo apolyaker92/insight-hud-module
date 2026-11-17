@@ -255,8 +255,32 @@ final class RouteTrack {
     }
 
     double metersToNext() {
+        return metersToNext(0);
+    }
+
+    /** Metres to the next manoeuvre, counting the car as {@code extra} metres further on than the last fix. */
+    double metersToNext(double extra) {
         Step next = nextStep();
-        return (next == null ? lengthMeters : next.atMeters) - along;
+        return Math.max(0, (next == null ? lengthMeters : next.atMeters) - along - extra);
+    }
+
+    /** The manoeuvre after the next one (the arrival counts), or null. */
+    Step stepAfterNext() {
+        Step next = nextStep();
+        if (next == null) return null;
+        boolean seen = false;
+        for (Step step : steps) {
+            if (step.kind == DEPART) continue;
+            if (seen) return step;
+            if (step == next) seen = true;
+        }
+        return null;
+    }
+
+    /** Metres between the next manoeuvre and the one after it; infinity when there is no later one. */
+    double metersBetweenNextAndAfter() {
+        Step next = nextStep(), after = stepAfterNext();
+        return next == null || after == null ? Double.POSITIVE_INFINITY : after.atMeters - next.atMeters;
     }
 
     /** Estimated seconds left, scaling the route's own duration by the distance still to go. */
