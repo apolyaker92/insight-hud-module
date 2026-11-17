@@ -738,6 +738,8 @@ public final class HudActivity extends Activity {
         getWindow().setNavigationBarColor(Color.BLACK);
         getWindow().setStatusBarColor(Color.BLACK);
         hud = new HudView(this);
+        // Some Bluetooth keyboards also register a mouse; keep Android's pointer from drawing over the HUD.
+        hud.setPointerIcon(android.view.PointerIcon.getSystemIcon(this, android.view.PointerIcon.TYPE_NULL));
         setContentView(hud);
         locationManager = getSystemService(LocationManager.class);
         navEnabled = preferences.getBoolean("navEnabled", true);
