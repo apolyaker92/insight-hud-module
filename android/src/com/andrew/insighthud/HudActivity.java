@@ -340,7 +340,30 @@ public final class HudActivity extends Activity {
         hud.invalidate();
     }
 
+    /** True while the "cancel route?" prompt (opened with F4 during navigation) is showing. */
+    private boolean cancelPrompt;
+    private static final long CANCEL_PROMPT_MS = 10_000;
+    private long cancelPromptDeadline;
+    private final Runnable cancelPromptTimeout = () -> dismissCancelPrompt();
+
+    private void showCancelPrompt() {
+        if (nav == null) return;
+        cancelPrompt = true;
+        cancelPromptDeadline = SystemClock.uptimeMillis() + CANCEL_PROMPT_MS;
+        main.removeCallbacks(cancelPromptTimeout);
+        main.postDelayed(cancelPromptTimeout, CANCEL_PROMPT_MS);
+        hud.invalidate();
+    }
+
+    private void dismissCancelPrompt() {
+        cancelPrompt = false;
+        main.removeCallbacks(cancelPromptTimeout);
+        hud.invalidate();
+    }
+
     private void cancelRoute() {
+        cancelPrompt = false;
+        main.removeCallbacks(cancelPromptTimeout);
         clearResumeRoute();
         routeGeneration.incrementAndGet();
         nav = null;
@@ -993,6 +1016,8 @@ public final class HudActivity extends Activity {
 
     private void parkHud() {
         openPlaces = null;
+        cancelPrompt = false;
+        main.removeCallbacks(cancelPromptTimeout);
         accessoryActive = false;
         routeGeneration.incrementAndGet();
         if (nav != null && !nav.arrived()) {
@@ -1721,6 +1746,13 @@ public final class HudActivity extends Activity {
             }
             return true;
         }
+        if (cancelPrompt && keyCode >= KeyEvent.KEYCODE_F1 && keyCode <= KeyEvent.KEYCODE_F4) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0 && hasWindowFocus()) {
+                if (keyCode == KeyEvent.KEYCODE_F1) cancelRoute();
+                else dismissCancelPrompt(); // F2, F3 or F4 keeps the route
+            }
+            return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_F5 || keyCode == KeyEvent.KEYCODE_F6) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
                     && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD) {
@@ -2085,7 +2117,9 @@ public final class HudActivity extends Activity {
                 preferences.edit().putBoolean("fullMap", fullMap).apply();
                 break;
             case 10:
-                showSavedPlaces();
+                // While a route is running F4 asks whether to cancel it; otherwise it lists saved places.
+                if (nav != null) showCancelPrompt();
+                else showSavedPlaces();
                 break;
             default:
                 return;
@@ -2266,7 +2300,8 @@ public final class HudActivity extends Activity {
                     }
                     drawResumeRoute(canvas, now);
                     postInvalidateDelayed(100);
-                } else if (openPlaces != null) drawSavedPlaces(canvas);
+                } else if (cancelPrompt && nav != null) drawCancelRoute(canvas, now);
+                else if (openPlaces != null) drawSavedPlaces(canvas);
             }
             if (quickOpen && !thermalHold && !shuttingDown && !starting) drawQuickConfig(canvas);
             boolean alertHeld = thermalHold || shuttingDown || starting || startupPending;
@@ -2311,6 +2346,26 @@ public final class HudActivity extends Activity {
             text(canvas, name, 640, 275, 22, MUTED, false, Paint.Align.CENTER);
             text(canvas, "[F1] YES", 457, 340, 23, ACCENT, true, Paint.Align.CENTER);
             text(canvas, "[F2] NO", 823, 340, 23, MUTED, true, Paint.Align.CENTER);
+        }
+
+        private void drawCancelRoute(Canvas canvas, long now) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(ground(0x96));
+            canvas.drawRect(FRAME_LEFT, FRAME_TOP, FRAME_LEFT + FRAME_WIDTH,
+                    FRAME_TOP + FRAME_BASE_HEIGHT + extraRows, paint);
+            paint.setColor(BACKGROUND);
+            canvas.drawRect(PLACES_LEFT, 173, PLACES_RIGHT, 381, paint);
+            border(canvas, PLACES_LEFT, 173, PLACES_RIGHT, 381);
+            paint.setColor(ACCENT);
+            float fraction = Math.max(0, Math.min(1, (cancelPromptDeadline - now) / (float) CANCEL_PROMPT_MS));
+            canvas.drawRect(PLACES_LEFT, 173, PLACES_LEFT + (PLACES_RIGHT - PLACES_LEFT) * fraction, 177, paint);
+            postInvalidateDelayed(100);
+            text(canvas, "CANCEL NAVIGATION?", 640, 234, 32, ACCENT, true, Paint.Align.CENTER);
+            String name = nav.name.isEmpty() ? "DESTINATION" : nav.name.toUpperCase(Locale.US);
+            if (name.length() > 36) name = name.substring(0, 35) + "…";
+            text(canvas, name, 640, 275, 22, MUTED, false, Paint.Align.CENTER);
+            text(canvas, "[F1] CANCEL ROUTE", 457, 340, 23, ACCENT, true, Paint.Align.CENTER);
+            text(canvas, "[F4] KEEP", 823, 340, 23, MUTED, true, Paint.Align.CENTER);
         }
 
         private int firstVisiblePlace() {
@@ -3514,6 +3569,21 @@ public final class HudActivity extends Activity {
                         answerResumeRoute(x < 640);
                         performClick();
                     }
+                }
+                return true;
+            }
+            if (cancelPrompt) {
+                if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                    float x = (event.getX() - left) / scale;
+                    float y = (event.getY() - top) / scale;
+                    if (mirror) x = 1280 - x;
+                    if (x >= PLACES_LEFT && x <= PLACES_RIGHT && y >= 300 && y <= 381) {
+                        if (x < 640) cancelRoute();
+                        else dismissCancelPrompt();
+                    } else {
+                        dismissCancelPrompt();
+                    }
+                    performClick();
                 }
                 return true;
             }

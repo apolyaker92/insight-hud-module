@@ -211,7 +211,17 @@ final class HUDDiscovery: NSObject, @preconcurrency NetServiceBrowserDelegate, @
     private var addresses: [String] = []
     private var pending: CheckedContinuation<[String], Never>?
 
+    /// Bonjour and a direct sweep of the Wi-Fi subnet run together: an Android hotspot often does not carry mDNS,
+    /// but the HUD's server always answers a plain GET / on its port.
     func find() async -> [String] {
+        async let bonjour = browse()
+        async let swept = HUDProbe.sweep()
+        var found = await bonjour
+        for address in await swept where !found.contains(address) { found.append(address) }
+        return found
+    }
+
+    private func browse() async -> [String] {
         await withCheckedContinuation { continuation in
             pending = continuation
             browser.delegate = self
@@ -230,8 +240,11 @@ final class HUDDiscovery: NSObject, @preconcurrency NetServiceBrowserDelegate, @
     }
 
     func netServiceDidResolveAddress(_ sender: NetService) {
-        guard let name = sender.hostName, sender.port > 0 else { return }
-        let host = name.hasSuffix(".") ? String(name.dropLast()) : name
+        guard sender.port > 0 else { return }
+        // Prefer the resolved IPv4 address: the .local host name needs working mDNS to look up again.
+        var host = HUDProbe.ipv4(in: sender.addresses ?? [])
+        if host == nil, let name = sender.hostName { host = name.hasSuffix(".") ? String(name.dropLast()) : name }
+        guard let host else { return }
         let address = "\(host):\(sender.port)"
         if !addresses.contains(address) { addresses.append(address) }
     }
@@ -248,4 +261,87 @@ private final class NoRedirects: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest) async -> URLRequest? { nil }
+}
+
+/// Finds the HUD by asking every address on the iPhone's Wi-Fi subnet for the HUD's greeting page.
+enum HUDProbe {
+    static let port = 8765
+
+    static func sweep() async -> [String] {
+        let hosts = candidateHosts()
+        guard !hosts.isEmpty else { return [] }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 1.5
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        var found: [String] = []
+        await withTaskGroup(of: String?.self) { group in
+            var next = 0
+            while next < min(32, hosts.count) {
+                let host = hosts[next]
+                next += 1
+                group.addTask { await greeting(host, session) }
+            }
+            for await result in group {
+                if let result { found.append(result) }
+                if next < hosts.count {
+                    let host = hosts[next]
+                    next += 1
+                    group.addTask { await greeting(host, session) }
+                }
+            }
+        }
+        return found.sorted()
+    }
+
+    private static func greeting(_ host: String, _ session: URLSession) async -> String? {
+        guard let url = URL(string: "http://\(host):\(port)/") else { return nil }
+        guard let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["app"] as? String == "insight-hud" else { return nil }
+        return "\(host):\(port)"
+    }
+
+    /// Every other address on the Wi-Fi subnet (at most one /24), the router's .1 first.
+    private static func candidateHosts() -> [String] {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return [] }
+        defer { freeifaddrs(list) }
+        var hosts: [String] = []
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = cursor {
+            cursor = entry.pointee.ifa_next
+            let flags = Int32(entry.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0,
+                  let address = entry.pointee.ifa_addr, address.pointee.sa_family == sa_family_t(AF_INET),
+                  let netmask = entry.pointee.ifa_netmask,
+                  String(cString: entry.pointee.ifa_name).hasPrefix("en") else { continue }
+            let ip = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+            let mask = netmask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+            var low = (ip & mask) + 1
+            var high = (ip & mask | ~mask) - 1
+            if mask < 0xFFFFFF00 { // wider than a /24: stay on the iPhone's own /24
+                low = (ip & 0xFFFFFF00) + 1
+                high = low + 253
+            }
+            guard low <= high else { continue }
+            for value in low...high where value != ip { hosts.append(dotted(value)) }
+        }
+        return hosts
+    }
+
+    static func ipv4(in addresses: [Data]) -> String? {
+        for data in addresses where data.count >= MemoryLayout<sockaddr_in>.size {
+            let socket = data.withUnsafeBytes { $0.loadUnaligned(as: sockaddr_in.self) }
+            if socket.sin_family == sa_family_t(AF_INET) { return dotted(UInt32(bigEndian: socket.sin_addr.s_addr)) }
+        }
+        return nil
+    }
+
+    private static func dotted(_ value: UInt32) -> String {
+        "\(value >> 24).\((value >> 16) & 255).\((value >> 8) & 255).\(value & 255)"
+    }
 }

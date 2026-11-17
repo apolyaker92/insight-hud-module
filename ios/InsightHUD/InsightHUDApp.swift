@@ -47,7 +47,7 @@ private struct HUDView: View {
                 .tabItem { Label("Navigation", systemImage: "location") }
                 .tag(Tab.navigation)
             NavigationStack {
-                if paired {
+                if paired || HUDCache.hasData {
                     TripHistoryView(client: client)
                         .id(address)
                 } else {
@@ -242,6 +242,16 @@ private struct HUDView: View {
                     .autocorrectionDisabled()
                     .onChange(of: address) { _, _ in clearConnection() }
             }
+            Section {
+                Button("Delete saved trips and drives", role: .destructive) {
+                    HUDCache.clear()
+                    feedback = "Saved trips and drives deleted from this iPhone."
+                }
+            } header: {
+                Text("Saved data")
+            } footer: {
+                Text("Trips and drive routes are copied here each time the HUD connects so you can view them without it. They stay on this iPhone, are not backed up, and are encrypted while it is locked.")
+            }
             if let view = hudStatus?.view, let mirror = hudStatus?.mirror,
                let brightness = hudStatus?.brightness {
                 Section("HUD display") {
@@ -309,7 +319,7 @@ private struct HUDView: View {
         defer { discovering = false }
         discoveredHUDs = await HUDDiscovery().find().sorted()
         if discoveredHUDs.isEmpty {
-            discoveryMessage = "No HUD found. Make sure the HUD is running and both phones are on the same Wi-Fi."
+            discoveryMessage = "No HUD found. Join the HUD hotspot, keep the HUD app open, and allow Local Network access for this app in Settings."
         } else if address.isEmpty && discoveredHUDs.count == 1 {
             address = discoveredHUDs[0]
         }
@@ -496,7 +506,46 @@ private struct SavedPlaceEditor: View {
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 }
 
-struct HUDTrip: Decodable {
+/// A private copy of the HUD's trips and drives, so they can be viewed without the HUD connected. It lives in the
+/// app's own Application Support folder, is encrypted whenever the iPhone is locked, and is left out of backups.
+enum HUDCache {
+    static let tripsFile = "trips.json", drivesFile = "drives.json"
+
+    private struct Stamped<Value: Codable>: Codable {
+        let saved: Date
+        let value: Value
+    }
+
+    private static var directory: URL {
+        var url = URL.applicationSupportDirectory.appending(path: "HUDCache", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+        return url
+    }
+
+    static var hasData: Bool {
+        [tripsFile, drivesFile].contains { FileManager.default.fileExists(atPath: directory.appending(path: $0).path) }
+    }
+
+    static func load<Value: Codable>(_ name: String, as type: Value.Type) -> (saved: Date, value: Value)? {
+        guard let data = try? Data(contentsOf: directory.appending(path: name)),
+              let stamped = try? JSONDecoder().decode(Stamped<Value>.self, from: data) else { return nil }
+        return (stamped.saved, stamped.value)
+    }
+
+    static func save<Value: Codable>(_ value: Value, as name: String) {
+        guard let data = try? JSONEncoder().encode(Stamped(saved: Date(), value: value)) else { return }
+        try? data.write(to: directory.appending(path: name), options: [.atomic, .completeFileProtection])
+    }
+
+    static func clear() {
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+struct HUDTrip: Codable {
     let ended: Int64
     let seconds: Int
     let miles: Double?
@@ -534,6 +583,7 @@ private struct TripHistoryView: View {
     @State private var metric: Metric = .distance
     @State private var loading = true
     @State private var error: String?
+    @State private var syncedAt: Date?
 
     var body: some View {
         List {
@@ -548,14 +598,19 @@ private struct TripHistoryView: View {
             if loading && trips.isEmpty {
                 ProgressView("Loading trips")
             } else if let error {
-                Text(error)
+                if trips.isEmpty {
+                    Text(error)
+                } else if let syncedAt {
+                    Text("HUD not connected. Showing trips saved \(syncedAt.formatted(date: .abbreviated, time: .shortened)).")
+                        .foregroundStyle(.secondary)
+                }
                 Button("Retry") { Task { await loadTrips() } }
             } else if trips.isEmpty {
                 Text("Completed drives with live OBD data will appear here.")
             }
 
             if !trips.isEmpty {
-                Section("At a glance") {
+                Section {
                     HStack {
                         stat("\(trips.count)", "Drives")
                         stat(trips.compactMap(\.miles).isEmpty ? "—" :
@@ -563,6 +618,10 @@ private struct TripHistoryView: View {
                              "Est. miles")
                         stat("\(trips.map(\.seconds).reduce(0, +) / 60)", "Minutes")
                     }
+                } header: {
+                    Text("At a glance")
+                } footer: {
+                    if let syncedAt { Text("Last synced \(syncedAt.formatted(date: .abbreviated, time: .shortened))") }
                 }
                 Section("Recent trips") {
                     Picker("Chart", selection: $metric) {
@@ -599,7 +658,13 @@ private struct TripHistoryView: View {
             }
         }
         .navigationTitle("Trip History")
-        .task { await loadTrips() }
+        .task {
+            if let cached = HUDCache.load(HUDCache.tripsFile, as: [HUDTrip].self) {
+                trips = cached.value
+                syncedAt = cached.saved
+            }
+            await loadTrips()
+        }
         .refreshable { await loadTrips() }
     }
 
@@ -626,6 +691,8 @@ private struct TripHistoryView: View {
         defer { loading = false }
         do {
             trips = try await client.trips()
+            syncedAt = Date()
+            HUDCache.save(trips, as: HUDCache.tripsFile)
             error = nil
         } catch {
             if !Task.isCancelled { self.error = error.localizedDescription }
@@ -639,10 +706,11 @@ private struct DriveMapView: View {
     @State private var position: MapCameraPosition = .automatic
     @State private var message: String?
     @State private var progress: Double?
+    @State private var note: String?
 
     var body: some View {
         Group {
-            if let progress {
+            if let progress, lines.isEmpty {
                 ProgressView("Loading recorded drives", value: progress)
                     .padding(24)
             } else if let message {
@@ -660,46 +728,78 @@ private struct DriveMapView: View {
                     }
                 }
                 .mapControls { MapCompass(); MapScaleView() }
+                .safeAreaInset(edge: .bottom) {
+                    if let note {
+                        Text(note)
+                            .font(.footnote)
+                            .padding(10)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            .padding(.bottom, 8)
+                    }
+                }
             }
         }
         .navigationTitle("Drive Map")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        .task {
+            if let cached = HUDCache.load(HUDCache.drivesFile, as: [String: [[[Double]]]].self) {
+                show(cached.value)
+            }
+            await load()
+        }
     }
 
+    private func show(_ drives: [String: [[[Double]]]]) {
+        var polylines: [MKPolyline] = []
+        for id in drives.keys.sorted() {
+            for line in drives[id] ?? [] {
+                let coordinates = line.compactMap { point -> CLLocationCoordinate2D? in
+                    guard point.count == 2 else { return nil }
+                    let coordinate = CLLocationCoordinate2D(latitude: point[0], longitude: point[1])
+                    return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
+                }
+                if coordinates.count > 1 {
+                    polylines.append(MKPolyline(coordinates: coordinates, count: coordinates.count))
+                }
+            }
+        }
+        lines = polylines
+        if lines.isEmpty {
+            message = "No recorded drives with GPS coverage yet."
+        } else {
+            message = nil
+            let bounds = lines.reduce(MKMapRect.null) { $0.union($1.boundingMapRect) }
+            position = .rect(bounds.insetBy(dx: -max(800, bounds.width * 0.1),
+                                            dy: -max(800, bounds.height * 0.1)))
+        }
+    }
+
+    /// Syncs with the HUD when it is reachable: drives already saved are kept, and only new ones (plus the
+    /// newest, which may still have been growing) are downloaded. Without the HUD the saved drives stay on screen.
     private func load() async {
         guard progress == nil else { return }
         progress = 0
         defer { progress = nil }
-        message = nil
+        note = nil
+        var drives = HUDCache.load(HUDCache.drivesFile, as: [String: [[[Double]]]].self)?.value ?? [:]
         do {
             let ids = try await client.driveIDs()
-            var polylines: [MKPolyline] = []
+            let newest = ids.max()
             for (index, id) in ids.enumerated() {
                 try Task.checkCancellation()
-                for line in try await client.driveLines(id) {
-                    let coordinates = line.compactMap { point -> CLLocationCoordinate2D? in
-                        guard point.count == 2 else { return nil }
-                        let coordinate = CLLocationCoordinate2D(latitude: point[0], longitude: point[1])
-                        return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
-                    }
-                    if coordinates.count > 1 {
-                        polylines.append(MKPolyline(coordinates: coordinates, count: coordinates.count))
-                    }
-                }
+                if drives[id] == nil || id == newest { drives[id] = try await client.driveLines(id) }
                 progress = Double(index + 1) / Double(ids.count)
             }
-            lines = polylines
-            if lines.isEmpty {
-                message = "No recorded drives with GPS coverage yet."
-            } else {
-                let bounds = lines.reduce(MKMapRect.null) { $0.union($1.boundingMapRect) }
-                position = .rect(bounds.insetBy(dx: -max(800, bounds.width * 0.1),
-                                                dy: -max(800, bounds.height * 0.1)))
-            }
+            HUDCache.save(drives, as: HUDCache.drivesFile)
         } catch {
-            if !Task.isCancelled { message = error.localizedDescription }
+            if Task.isCancelled { return }
+            if drives.isEmpty {
+                message = error.localizedDescription
+                return
+            }
+            note = "HUD not connected. Showing drives saved on this iPhone."
         }
+        show(drives)
     }
 }
 
