@@ -3,3 +3,8 @@
 *.jks
 *.keystore
 /work/
+__pycache__/
+*.pyc
+.DS_Store
+xcuserdata/
+*.xcworkspace/
