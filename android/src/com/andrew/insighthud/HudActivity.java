@@ -34,7 +34,6 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
-import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -50,7 +49,7 @@ import org.json.JSONObject;
 
 public final class HudActivity extends Activity {
     SharedPreferences preferences;
-    private HudView hud;
+    HudView hud;
     volatile boolean mirror;
     boolean demo;
     volatile boolean mapPreview;
@@ -99,6 +98,7 @@ public final class HudActivity extends Activity {
         if (quickOpen) closeQuick();
         else openQuick();
     };
+    private final KeyboardBattery keyboards = new KeyboardBattery(this);
     private final Runnable quickIdle = this::closeQuick;
     private final Runnable quickTick = new Runnable() {
         @Override public void run() {
@@ -526,7 +526,7 @@ public final class HudActivity extends Activity {
     private static final long SHUTDOWN_DURATION_MS = 1200;
     private static final long TRIP_REPORT_MS = 4200;
     final Handler main = new Handler(Looper.getMainLooper());
-    private BluetoothAdapter bluetooth;
+    BluetoothAdapter bluetooth;
     private ObdBluetooth obd;
     ObdBluetooth.Readings readings;
     private static final OfflineRoadMap.RoadInfo DEMO_ROAD_INFO =
@@ -771,8 +771,7 @@ public final class HudActivity extends Activity {
 
     @Override protected void onDestroy() {
         main.removeCallbacksAndMessages(null);
-        gattQueue.clear();
-        closeGattLink();
+        keyboards.close();
         if (Build.VERSION.SDK_INT >= 29 && thermalListener != null) {
             getSystemService(PowerManager.class).removeThermalStatusListener(thermalListener);
         }
@@ -1219,7 +1218,7 @@ public final class HudActivity extends Activity {
         HotspotPower.set(this, on);
     }
 
-    private boolean hasBluetoothPermission() {
+    boolean hasBluetoothPermission() {
         return Build.VERSION.SDK_INT < 31 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
                 == PackageManager.PERMISSION_GRANTED;
     }
@@ -1951,7 +1950,7 @@ public final class HudActivity extends Activity {
         hud.invalidate();
     }
 
-    private void refreshQuick() {
+    void refreshQuick() {
         List<String[]> rows = new ArrayList<>();
         boolean low = battery >= 0 && battery < 20 && !powered;
         rows.add(new String[]{"PHONE BATTERY", battery < 0 ? "--" : battery + "%" + (powered ? "  CHARGING" : ""),
@@ -1961,177 +1960,8 @@ public final class HudActivity extends Activity {
         int level = Math.max(0, Math.min(status.length - 1, systemThermalStatus));
         rows.add(new String[]{"PHONE TEMP", Math.round(c) + " C / " + Math.round(c * 9 / 5 + 32) + " F" + status[level],
                 c >= 40 || systemThermalStatus >= PowerManager.THERMAL_STATUS_MODERATE ? "warn" : ""});
-        rows.addAll(peripheralRows());
+        rows.addAll(keyboards.peripheralRows());
         quickHealth = rows;
-    }
-
-    private final java.util.Map<String, Integer> gattBatteryLevels = new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.Map<String, Long> gattBatteryAt = new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.ArrayDeque<BluetoothDevice> gattQueue = new java.util.ArrayDeque<>();
-    private android.bluetooth.BluetoothGatt gattLink;
-    private Runnable gattFinish;
-    private long gattReadAt;
-    private static final long GATT_STALE_MS = 10 * 60_000;
-    private static final java.util.UUID BATTERY_SERVICE =
-            java.util.UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb");
-    private static final java.util.UUID BATTERY_LEVEL =
-            java.util.UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb");
-
-    /**
-     * Reads the standard GATT Battery Level of each paired Bluetooth keyboard, one device at a time and at most once
-     * a minute. This works on any Android version and needs no hidden API. Readings expire after ten minutes so an
-     * old value is never shown as current.
-     */
-    private void readKeyboardBatteriesOverGatt() {
-        long now = SystemClock.elapsedRealtime();
-        if (bluetooth == null || !hasBluetoothPermission() || now - gattReadAt < 60_000
-                || gattLink != null || !gattQueue.isEmpty()) return;
-        gattReadAt = now;
-        try {
-            for (BluetoothDevice device : bluetooth.getBondedDevices()) {
-                if (device.getBluetoothClass() != null && device.getBluetoothClass().getMajorDeviceClass()
-                        == android.bluetooth.BluetoothClass.Device.Major.PERIPHERAL) gattQueue.add(device);
-            }
-        } catch (SecurityException refused) {
-            Log.i("HudKbd", "Bluetooth battery read not allowed");
-            return;
-        }
-        readNextBatteryOverGatt();
-    }
-
-    private void readNextBatteryOverGatt() {
-        BluetoothDevice device = gattQueue.poll();
-        if (device == null || isDestroyed()) return;
-        final String name = device.getName();
-        if (name == null) {
-            readNextBatteryOverGatt();
-            return;
-        }
-        final String tag = "kbd#" + Integer.toHexString(device.getAddress().hashCode());
-        final Runnable finish = new Runnable() {
-            private boolean done;
-            @Override public void run() {
-                if (done) return;
-                done = true;
-                main.removeCallbacks(this);
-                closeGattLink();
-                readNextBatteryOverGatt();
-            }
-        };
-        android.bluetooth.BluetoothGattCallback callback = new android.bluetooth.BluetoothGattCallback() {
-            @Override public void onConnectionStateChange(android.bluetooth.BluetoothGatt gatt, int status, int state) {
-                Log.i("HudKbd", tag + " GATT state=" + state + " status=" + status);
-                if (state == android.bluetooth.BluetoothProfile.STATE_CONNECTED) gatt.discoverServices();
-                else main.post(finish);
-            }
-
-            @Override public void onServicesDiscovered(android.bluetooth.BluetoothGatt gatt, int status) {
-                android.bluetooth.BluetoothGattService service = gatt.getService(BATTERY_SERVICE);
-                android.bluetooth.BluetoothGattCharacteristic level =
-                        service == null ? null : service.getCharacteristic(BATTERY_LEVEL);
-                Log.i("HudKbd", tag + " battery service " + (level == null ? "missing" : "found"));
-                if (level == null || !gatt.readCharacteristic(level)) gatt.disconnect();
-            }
-
-            @Override public void onCharacteristicRead(android.bluetooth.BluetoothGatt gatt,
-                    android.bluetooth.BluetoothGattCharacteristic characteristic, byte[] value, int status) {
-                batteryRead(gatt, value, status);
-            }
-
-            @SuppressWarnings("deprecation")
-            @Override public void onCharacteristicRead(android.bluetooth.BluetoothGatt gatt,
-                    android.bluetooth.BluetoothGattCharacteristic characteristic, int status) {
-                if (Build.VERSION.SDK_INT < 33) batteryRead(gatt, characteristic.getValue(), status);
-            }
-
-            private void batteryRead(android.bluetooth.BluetoothGatt gatt, byte[] value, int status) {
-                if (status == android.bluetooth.BluetoothGatt.GATT_SUCCESS && value != null && value.length > 0
-                        && (value[0] & 0xff) <= 100) {
-                    gattBatteryLevels.put(name, value[0] & 0xff);
-                    gattBatteryAt.put(name, SystemClock.elapsedRealtime());
-                    main.post(() -> {
-                        if (quickOpen) refreshQuick();
-                        hud.invalidate();
-                    });
-                }
-                gatt.disconnect();
-            }
-        };
-        try {
-            gattFinish = finish;
-            gattLink = device.connectGatt(getApplicationContext(), false, callback, BluetoothDevice.TRANSPORT_LE);
-            if (gattLink == null) {
-                finish.run();
-                return;
-            }
-            main.postDelayed(finish, 12_000); // never hold the link open if the keyboard is asleep or out of range
-        } catch (SecurityException refused) {
-            finish.run();
-        }
-    }
-
-    private void closeGattLink() {
-        if (gattFinish != null) main.removeCallbacks(gattFinish);
-        gattFinish = null;
-        android.bluetooth.BluetoothGatt link = gattLink;
-        gattLink = null;
-        if (link != null) {
-            try {
-                link.close();
-            } catch (SecurityException ignored) {
-                // Permission was withdrawn; nothing left to release.
-            }
-        }
-    }
-
-    private List<String[]> peripheralRows() {
-        List<String[]> rows = new ArrayList<>();
-        java.util.Map<String, Integer> bluetoothLevels = new java.util.HashMap<>();
-        long fresh = SystemClock.elapsedRealtime() - GATT_STALE_MS;
-        for (java.util.Map.Entry<String, Integer> reading : gattBatteryLevels.entrySet()) {
-            Long at = gattBatteryAt.get(reading.getKey());
-            if (at != null && at >= fresh) bluetoothLevels.put(reading.getKey(), reading.getValue());
-        }
-        bluetoothLevels.putAll(bondedBatteryLevels());
-        readKeyboardBatteriesOverGatt();
-        for (int id : InputDevice.getDeviceIds()) {
-            InputDevice device = InputDevice.getDevice(id);
-            if (device == null || device.isVirtual() || device.getKeyboardType() != InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
-                continue;
-            }
-            int percent = -1;
-            if (Build.VERSION.SDK_INT >= 31) {
-                android.hardware.BatteryState state = device.getBatteryState();
-                if (state != null && state.isPresent() && !Float.isNaN(state.getCapacity())) {
-                    percent = Math.round(state.getCapacity() * 100f);
-                }
-            }
-            if (percent < 0 && bluetoothLevels.containsKey(device.getName())) percent = bluetoothLevels.get(device.getName());
-            if (percent < 0 && bluetoothLevels.size() == 1) percent = bluetoothLevels.values().iterator().next();
-            String name = device.getName() == null ? "KEYBOARD" : device.getName().toUpperCase(Locale.US);
-            if (name.length() > 22) name = name.substring(0, 22);
-            rows.add(new String[]{name, percent >= 0 ? percent + "%" : "CONNECTED", percent >= 0 && percent < 20 ? "warn" : ""});
-            if (rows.size() >= 2) break;
-        }
-        if (rows.isEmpty()) rows.add(new String[]{"KEYBOARD", "NOT CONNECTED", ""});
-        return rows;
-    }
-
-    /** Battery levels of paired Bluetooth keyboards, by name. The call is hidden API, so it may be refused. */
-    private java.util.Map<String, Integer> bondedBatteryLevels() {
-        java.util.Map<String, Integer> levels = new java.util.HashMap<>();
-        try {
-            if (bluetooth == null || !hasBluetoothPermission()) return levels;
-            for (BluetoothDevice device : bluetooth.getBondedDevices()) {
-                if (device.getBluetoothClass() == null || device.getBluetoothClass().getMajorDeviceClass()
-                        != android.bluetooth.BluetoothClass.Device.Major.PERIPHERAL) continue;
-                int level = (Integer) BluetoothDevice.class.getMethod("getBatteryLevel").invoke(device);
-                if (level >= 0 && level <= 100) levels.put(device.getName(), level);
-            }
-        } catch (ReflectiveOperationException | RuntimeException refused) {
-            // No hidden API here: the keyboard just shows as connected.
-        }
-        return levels;
     }
 
     void activateControl(int control) {
