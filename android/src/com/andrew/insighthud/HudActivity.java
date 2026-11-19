@@ -85,28 +85,9 @@ public final class HudActivity extends Activity {
     final Runnable resumeRouteTimeout = () -> answerResumeRoute(false);
     private long lastRerouteAt;
 
-    private static final int F1_HOLD_MS = 600, QUICK_IDLE_MS = 12_000, QUICK_REFRESH_MS = 2000;
-    boolean quickOpen;
-    int quickRow;
-    List<String[]> quickHealth = new ArrayList<>();
-    String quickGasNote = "";
-    private boolean f1Down, f1HoldFired;
-    private final Runnable f1Hold = () -> {
-        f1HoldFired = true;
-        if (quickOpen) closeQuick();
-        else openQuick();
-    };
-    private final KeyboardBattery keyboards = new KeyboardBattery(this);
+    final KeyboardBattery keyboards = new KeyboardBattery(this);
+    final QuickPanel quick = new QuickPanel(this);
     private final NavService navService = new NavService(this);
-    private final Runnable quickIdle = this::closeQuick;
-    private final Runnable quickTick = new Runnable() {
-        @Override public void run() {
-            if (!quickOpen) return;
-            refreshQuick();
-            hud.invalidate();
-            main.postDelayed(this, QUICK_REFRESH_MS);
-        }
-    };
 
 
 
@@ -371,7 +352,7 @@ public final class HudActivity extends Activity {
     float batteryTemperature;
     private boolean batteryOverheat;
     private PowerManager.OnThermalStatusChangedListener thermalListener;
-    private int systemThermalStatus;
+    int systemThermalStatus;
     int thermalLevel;
     boolean thermalBlank;
     long thermalStartedAt;
@@ -383,7 +364,7 @@ public final class HudActivity extends Activity {
     long shutdownStartedAt;
     private MediaPlayer startupSound;
     private SoundPool switchSounds;
-    private volatile int switchSoundId, shutdownSoundId, switchLoadId, shutdownLoadId;
+    volatile int switchSoundId, shutdownSoundId, switchLoadId, shutdownLoadId;
     private volatile int lockHeadingSoundId, lockNorthSoundId, lockHeadingLoadId, lockNorthLoadId;
     private volatile int zoomInSoundId, zoomOutSoundId, zoomInLoadId, zoomOutLoadId;
     static final long STARTUP_DURATION_MS = 2800;
@@ -648,7 +629,7 @@ public final class HudActivity extends Activity {
         if (driveLog != null) driveLog.close();
         navService.stop();
         routing.shutdownNow();
-        main.removeCallbacks(f1Hold);
+        main.removeCallbacks(quick.f1Hold);
         if (routeDb != null) routeDb.close();
         unregisterReceiver(batteryReceiver);
         super.onDestroy();
@@ -678,7 +659,7 @@ public final class HudActivity extends Activity {
         return lightSensor != null && autoLevel <= SoundPolicy.DARK_LEVEL;
     }
 
-    private void playSound(int id, float base, SoundPolicy.Kind kind) {
+    void playSound(int id, float base, SoundPolicy.Kind kind) {
         if (switchSounds == null || id == 0) return;
         float gain = sounds.gain(kind, ambientDark());
         if (gain <= 0f) return;
@@ -1570,9 +1551,9 @@ public final class HudActivity extends Activity {
             }
             return true;
         }
-        if (keyCode == KeyEvent.KEYCODE_F1) return handleF1(event);
-        if (quickOpen && (keyCode == KeyEvent.KEYCODE_F2 || keyCode == KeyEvent.KEYCODE_F3 || keyCode == KeyEvent.KEYCODE_F4)) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) quickKey(keyCode);
+        if (keyCode == KeyEvent.KEYCODE_F1) return quick.handleF1(event);
+        if (quick.quickOpen && (keyCode == KeyEvent.KEYCODE_F2 || keyCode == KeyEvent.KEYCODE_F3 || keyCode == KeyEvent.KEYCODE_F4)) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) quick.quickKey(keyCode);
             return true;
         }
         int control;
@@ -1665,108 +1646,37 @@ public final class HudActivity extends Activity {
         updateMap();
     }
 
-    private boolean handleF1(KeyEvent event) {
-        boolean usable = hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD
-                && (startupStartedAt == 0 || startupClock(SystemClock.uptimeMillis()) >= STARTUP_DURATION_MS);
-        if (!usable) return true;
-        if (openPlaces != null) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) chooseSavedPlace();
-            return true;
-        }
-        if (event.getAction() == KeyEvent.ACTION_DOWN) {
-            if (event.getRepeatCount() == 0) {
-                f1Down = true;
-                f1HoldFired = false;
-                main.removeCallbacks(f1Hold);
-                main.postDelayed(f1Hold, F1_HOLD_MS);
-            } else if (f1Down && !f1HoldFired) { // the keyboard's own auto-repeat means it is being held
-                main.removeCallbacks(f1Hold);
-                f1Hold.run();
-            }
-        } else if (event.getAction() == KeyEvent.ACTION_UP) {
-            main.removeCallbacks(f1Hold);
-            if (f1Down && !f1HoldFired) {
-                if (quickOpen) quickKey(KeyEvent.KEYCODE_F1);
-                else activateControl(4);
-            }
-            f1Down = false;
-        }
-        return true;
-    }
 
-    private void openQuick() {
-        quickOpen = true;
-        quickRow = 0;
-        quickGasNote = "";
-        refreshQuick();
-        touchQuick();
-        main.removeCallbacks(quickTick);
-        main.postDelayed(quickTick, QUICK_REFRESH_MS);
-        playSound(switchSoundId, 0.42f, SoundPolicy.Kind.UI);
-        hud.invalidate();
-    }
 
-    private void closeQuick() {
-        if (!quickOpen) return;
-        quickOpen = false;
-        main.removeCallbacks(quickIdle);
-        main.removeCallbacks(quickTick);
-        playSound(switchSoundId, 0.3f, SoundPolicy.Kind.UI);
-        hud.invalidate();
-    }
 
-    private void touchQuick() {
-        main.removeCallbacks(quickIdle);
-        main.postDelayed(quickIdle, QUICK_IDLE_MS);
-    }
 
-    private void quickKey(int keyCode) {
-        touchQuick();
-        if (keyCode == KeyEvent.KEYCODE_F1) {
-            quickRow = (quickRow + 1) % 3;
-            playSound(switchSoundId, 0.3f, SoundPolicy.Kind.UI);
-        } else if (keyCode == KeyEvent.KEYCODE_F3) {
-            closeQuick();
-            return;
-        } else if (keyCode == KeyEvent.KEYCODE_F4 || quickRow == 0) {
-            activateControl(2);
-        } else if (quickRow == 2) {
-            playSound(switchSoundId, 0.42f, SoundPolicy.Kind.UI);
-            routeToNearestGas();
-        } else {
-            preferences.edit().putInt("palette", (preferences.getInt("palette", 0) + 1) % PALETTE_NAMES.length).apply();
-            hud.applyPalette();
-            playSound(switchSoundId, 0.42f, SoundPolicy.Kind.UI);
-        }
-        hud.invalidate();
-    }
 
-    private void routeToNearestGas() {
+    void routeToNearestGas() {
         Location from = gpsFix;
         if (from == null) {
-            quickGasNote = "NO GPS FIX";
+            quick.quickGasNote = "NO GPS FIX";
             return;
         }
         RouteDatabase graph = routeDatabase();
         if (graph == null) {
-            quickGasNote = "NO ROUTE DATA";
+            quick.quickGasNote = "NO ROUTE DATA";
             return;
         }
         if (routingBusy) {
-            quickGasNote = "BUSY";
+            quick.quickGasNote = "BUSY";
             return;
         }
-        quickGasNote = "SEARCHING";
+        quick.quickGasNote = "SEARCHING";
         double fromLat = from.getLatitude(), fromLon = from.getLongitude();
         double heading = from.hasBearing() && from.hasSpeed() && from.getSpeed() > 2.5 ? from.getBearing() : Double.NaN;
         roadMap.nearestFuel(fromLat, fromLon, 4, stations -> {
             if (stations.isEmpty()) {
-                quickGasNote = "NONE NEARBY";
+                quick.quickGasNote = "NONE NEARBY";
                 hud.invalidate();
                 return;
             }
             if (routingBusy) {
-                quickGasNote = "BUSY";
+                quick.quickGasNote = "BUSY";
                 hud.invalidate();
                 return;
             }
@@ -1790,7 +1700,7 @@ public final class HudActivity extends Activity {
                 main.post(() -> {
                     routingBusy = false;
                     if (chosen == null) {
-                        quickGasNote = "NO ROUTE";
+                        quick.quickGasNote = "NO ROUTE";
                         raiseAlert("NO ROUTE TO GAS", Alerts.WARN);
                         hud.invalidate();
                         return;
@@ -1799,26 +1709,13 @@ public final class HudActivity extends Activity {
                     startRoute(new RouteTrack(name, chosen.lat, chosen.lon, chosen.steps, chosen.seconds), true);
                     navGoal = new double[]{station.lat, station.lon};
                     navGoalName = name;
-                    closeQuick();
+                    quick.closeQuick();
                 });
             });
         });
         hud.invalidate();
     }
 
-    void refreshQuick() {
-        List<String[]> rows = new ArrayList<>();
-        boolean low = battery >= 0 && battery < 20 && !powered;
-        rows.add(new String[]{"PHONE BATTERY", battery < 0 ? "--" : battery + "%" + (powered ? "  CHARGING" : ""),
-                low ? "warn" : ""});
-        float c = batteryTemperature;
-        String[] status = {"", "  WARM", "  HOT", "  HOT", "  CRITICAL", "  CRITICAL", "  CRITICAL"};
-        int level = Math.max(0, Math.min(status.length - 1, systemThermalStatus));
-        rows.add(new String[]{"PHONE TEMP", Math.round(c) + " C / " + Math.round(c * 9 / 5 + 32) + " F" + status[level],
-                c >= 40 || systemThermalStatus >= PowerManager.THERMAL_STATUS_MODERATE ? "warn" : ""});
-        rows.addAll(keyboards.peripheralRows());
-        quickHealth = rows;
-    }
 
     void activateControl(int control) {
         boolean skipClick = false;

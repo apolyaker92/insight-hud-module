@@ -106,7 +106,7 @@ final class KeyboardBattery {
                     gattBatteryLevels.put(name, value[0] & 0xff);
                     gattBatteryAt.put(name, SystemClock.elapsedRealtime());
                     host.main.post(() -> {
-                        if (host.quickOpen) host.refreshQuick();
+                        if (host.quick.quickOpen) host.quick.refreshQuick();
                         host.hud.invalidate();
                     });
                 }

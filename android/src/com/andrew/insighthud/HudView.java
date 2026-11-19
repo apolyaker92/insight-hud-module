@@ -193,7 +193,7 @@ final class HudView extends View {
             } else if (host.cancelPrompt && host.nav != null) drawCancelRoute(canvas, now);
             else if (host.openPlaces != null) drawSavedPlaces(canvas);
         }
-        if (host.quickOpen && !thermalHold && !shuttingDown && !starting) drawQuickConfig(canvas);
+        if (host.quick.quickOpen && !thermalHold && !shuttingDown && !starting) drawQuickConfig(canvas);
         boolean alertHeld = thermalHold || shuttingDown || starting || host.startupPending;
         Alerts.Alert alert = host.alerts.tick(now, alertHeld);
         if (alert != null) {
@@ -341,10 +341,10 @@ final class HudView extends View {
         String[] names = {"BRIGHTNESS", "COLOR", "NEAREST GAS"};
         String[] values = {host.BRIGHTNESS_NAMES[host.brightnessMode],
                 host.PALETTE_NAMES[Math.max(0, Math.min(host.PALETTE_NAMES.length - 1, host.preferences.getInt("palette", 0)))],
-                host.quickGasNote.isEmpty() ? "GO" : host.quickGasNote};
+                host.quick.quickGasNote.isEmpty() ? "GO" : host.quick.quickGasNote};
         for (int i = 0; i < 3; i++) {
             float top = 118 + i * 124;
-            boolean selected = host.quickRow == i;
+            boolean selected = host.quick.quickRow == i;
             if (selected) {
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(ACCENT);
@@ -357,13 +357,13 @@ final class HudView extends View {
         }
         text(canvas, "DEVICE HEALTH", 680, 146, 22, MUTED, false);
         float y = 190;
-        for (String[] row : host.quickHealth) {
+        for (String[] row : host.quick.quickHealth) {
             if (y > bottom - 90) break;
             text(canvas, row[0], 680, y, 20, MUTED, false);
             text(canvas, row[1], 680, y + 44, 38, row[2].isEmpty() ? ACCENT : 0xFFFF8A45, true);
             y += 86;
         }
-        text(canvas, host.quickRow == 2 ? "F1 NEXT     F2 GO     F3 CLOSE" : "F1 NEXT     F2 CHANGE     F3 CLOSE",
+        text(canvas, host.quick.quickRow == 2 ? "F1 NEXT     F2 GO     F3 CLOSE" : "F1 NEXT     F2 CHANGE     F3 CLOSE",
                 640, bottom - 28, 22, MUTED, false, Paint.Align.CENTER);
     }
 
