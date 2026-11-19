@@ -7,10 +7,9 @@ import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** The routing graph on the phone: hud-route.db, read a tile at a time with a few kept in memory. */
 final class RouteDatabase implements Router.Tiles {
     private static final String TAG = "HudRoute";
-    private static final int KEEP = 40; // more than one long search touches, or tiles are decoded again and again
+    private static final int KEEP = 40;
     private static final int SLICE = 512 * 1024;
     private static final RouteTile MISSING = new RouteTile(new long[0], new int[0], new int[0], new int[]{0},
             new long[0], new int[0], new int[0], new float[0], new float[0], new byte[0], new byte[0], new byte[0],
@@ -59,7 +58,6 @@ final class RouteDatabase implements Router.Tiles {
         return tile == MISSING ? null : tile;
     }
 
-    /** A tile's bytes, fetched in slices because one row can be bigger than a cursor window (about 2 MB). */
     private byte[] blob(int level, int x, int y) {
         String[] where = {String.valueOf(level), String.valueOf(x), String.valueOf(y)};
         int size;

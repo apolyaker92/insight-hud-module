@@ -5,7 +5,6 @@ import android.util.Log;
 import java.lang.reflect.Proxy;
 import java.util.concurrent.Executor;
 
-/** Uses the system tethering API on the HUD's Android 15 LineageOS build. */
 final class HotspotPower {
     private static final String TAG = "HudHotspot";
     private static final int WIFI = 0;

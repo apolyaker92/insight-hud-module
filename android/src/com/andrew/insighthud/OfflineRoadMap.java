@@ -22,16 +22,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
-/** Loads only the road tiles around the display, independently of the GPS provider. */
 final class OfflineRoadMap {
     private static final String TAG = "HudOfflineMap";
     private static final int ZOOM = 14;
     private static final int WORLD = 1 << ZOOM;
     private static final int TILE_RADIUS = 2;
     private static final String EXTERNAL_PACK = "hud-roads.db";
-    /** A detailed pack for home turf; used inside its bounds, the wide pack elsewhere. */
     private static final String LOCAL_PACK = "hud-local.db";
-    static final int KINDS = 5; // local, arterial, highway, rail, water
+    static final int KINDS = 5;
 
     static final class Region {
         final String name;
@@ -69,15 +67,13 @@ final class OfflineRoadMap {
         }
     }
 
-    /** What the pack knows about where a fix is: the road, its posted limit, the town and the nearest fuel. */
     static final class RoadInfo {
-        final String road;      // null when the fix is not on a mapped road
-        final int limitMph;     // 0 when no limit is posted in the data
+        final String road;
+        final int limitMph;
         final String place;
-        final String fuelName;  // null when none is in range
+        final String fuelName;
         final double fuelMiles;
         final String fuelBearing;
-        /** The nearest thing worth a warning on the road ahead (a RoadLookup point kind), or 0 for none. */
         final int aheadKind;
         final String aheadName;
         final double aheadMeters;
@@ -130,12 +126,11 @@ final class OfflineRoadMap {
         }
     }
 
-    /** One opened road database with the tile range it covers. */
     private static final class Pack {
         final SQLiteDatabase database;
         final Region region;
         final boolean compact;
-        final boolean info; // has the ways, places and pois tables
+        final boolean info;
         final int minX, maxX, minY, maxY;
 
         Pack(SQLiteDatabase database, Region region, boolean info) {
@@ -158,7 +153,7 @@ final class OfflineRoadMap {
     private final Runnable changed;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    private Pack wide, local; // Owned by the worker.
+    private Pack wide, local;
     private boolean opening, closed, failed, sceneFailed;
     private static final long RETRY_MS = 5000;
     private int requestedX = -1, requestedY = -1;
@@ -174,7 +169,6 @@ final class OfflineRoadMap {
     Scene scene() { return scene; }
     boolean failed() { return failed || sceneFailed; }
 
-    /** A fuel stop from the pack. */
     static final class Fuel {
         final String name;
         final double lat, lon, meters;
@@ -195,7 +189,6 @@ final class OfflineRoadMap {
         return Math.toDegrees(Math.atan(Math.sinh(Math.PI * (1 - 2 * y / WORLD))));
     }
 
-    /** The nearest few fuel stops to a point, nearest first, found off the main thread (empty when none). */
     void nearestFuel(double latitude, double longitude, int count, Consumer<List<Fuel>> done) {
         if (closed) {
             done.accept(new ArrayList<>());
@@ -283,7 +276,6 @@ final class OfflineRoadMap {
                     changed.run();
                 });
             } catch (RuntimeException error) {
-                // A tile read can fail transiently (storage I/O); retry rather than disabling the map.
                 Log.w(TAG, "Could not read offline road tiles", error);
                 main.post(() -> {
                     if (closed || requestedX != x || requestedY != y) return;
@@ -291,7 +283,7 @@ final class OfflineRoadMap {
                     changed.run();
                     main.postDelayed(() -> {
                         if (closed) return;
-                        requestedX = requestedY = -1; // Forget the failed request so the next refresh retries it.
+                        requestedX = requestedY = -1;
                         changed.run();
                     }, RETRY_MS);
                 });
@@ -414,7 +406,6 @@ final class OfflineRoadMap {
         return result;
     }
 
-    /** Looks up the road under a fix off the main thread; the callback gets null when there is nothing to say. */
     void lookup(double latitude, double longitude, double course, double speedMph, Consumer<RoadInfo> done) {
         if (region == null || failed || closed) return;
         worker.execute(() -> {
@@ -431,8 +422,8 @@ final class OfflineRoadMap {
         });
     }
 
-    private static final int PLACE_RADIUS = 6;   // tiles, roughly 11 km
-    private static final int FUEL_RADIUS = 14;   // tiles, roughly 25 km
+    private static final int PLACE_RADIUS = 6;
+    private static final int FUEL_RADIUS = 14;
     private static final double PLACE_MAX_METERS = 9000;
 
     private RoadInfo readInfo(double latitude, double longitude, double course, double speedMph) {
@@ -456,7 +447,7 @@ final class OfflineRoadMap {
         double best = Double.POSITIVE_INFINITY;
         String[] around = {String.valueOf(tx - 1), String.valueOf(tx + 1), String.valueOf(ty - 1),
                 String.valueOf(ty + 1)};
-        List<Object[]> nearbyWays = new ArrayList<>(); // x, y, name, geometry
+        List<Object[]> nearbyWays = new ArrayList<>();
         try (Cursor cursor = database.rawQuery("SELECT x, y, name, mph, geometry FROM ways "
                 + "WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?", around)) {
             while (cursor.moveToNext()) {
@@ -471,7 +462,7 @@ final class OfflineRoadMap {
                 }
             }
         }
-        String drivenName = road; // the name of the road under the fix, even if empty, for the on-road check
+        String drivenName = road;
         boolean onMappedRoad = Math.sqrt(best) * meters <= RoadLookup.ROAD_MATCH_METERS;
         if (!onMappedRoad) {
             road = null;
@@ -493,7 +484,6 @@ final class OfflineRoadMap {
                 double dy = cursor.getDouble(3) - fy;
                 double distance = Math.sqrt(dx * dx + dy * dy) * meters;
                 if (distance > PLACE_MAX_METERS) continue;
-                // A town or village within reach beats a nearer hamlet.
                 boolean better = (kind <= 2) != (placeKind <= 2) ? kind <= 2 : distance < placeBest;
                 if (better) {
                     place = cursor.getString(0);
@@ -521,7 +511,6 @@ final class OfflineRoadMap {
                 }
             }
         }
-        // The nearest eligible point in each priority group; the first group with anything wins.
         int[] groupKind = new int[3];
         String[] groupName = new String[3];
         double[] groupBest = {Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY};
@@ -540,8 +529,6 @@ final class OfflineRoadMap {
                             RoadLookup.bearingDegrees(dx, dy), course, speedMph)) {
                         double tolerance = RoadLookup.onRoadMeters(kind);
                         if (tolerance > 0) {
-                            // A point beside the road (a stop sign on a side street, a crossing on a parallel road)
-                            // is not on the way ahead; only points on the road being driven count.
                             if (!onMappedRoad || distanceToRoad(nearbyWays, drivenName,
                                     cursor.getDouble(2), cursor.getDouble(3)) * meters > tolerance) continue;
                         }
@@ -559,7 +546,6 @@ final class OfflineRoadMap {
                 chosen < 0 ? Double.NaN : groupBest[chosen]);
     }
 
-    /** Distance, in tile units, from a point to the nearest piece of the named road in the nearby ways. */
     private static double distanceToRoad(List<Object[]> ways, String name, double px, double py) {
         double best = Double.POSITIVE_INFINITY;
         for (Object[] way : ways) {

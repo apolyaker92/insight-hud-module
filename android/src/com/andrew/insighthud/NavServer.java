@@ -18,30 +18,15 @@ import java.util.concurrent.Executors;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/**
- * A tiny HTTP server so a phone on the same Wi-Fi can hand the HUD a destination or a finished route. It speaks just
- * enough HTTP/1.1 for Shortcuts, curl and an app: one request per connection, JSON in and out, and a pairing code in
- * the X-HUD-Token header (or a token= query parameter) on everything but the greeting page.
- *
- *   GET  /            a plain greeting (no token), handy for checking the address from a browser
- *   GET  /status      what the HUD is doing
- *   POST /route       a route to follow (see RouteParser for the JSON); ?precision=6 for polyline6 geometry
- *   POST /destination {"lat":..,"lon":..,"name":".."}: route there on the HUD itself
- *   POST /settings    set one or more display settings
- *   GET  /trips       recent completed trip summaries
- *   POST /cancel      stop navigating
- */
 final class NavServer {
     private static final String TAG = "HudNav";
     private static final int MAX_BODY = 4 * 1024 * 1024;
     private static final int MAX_HEADER = 16 * 1024;
 
-    /** Called on a server thread; implementations post to the UI thread themselves. */
     interface Handler {
         String status();
         String trips();
         String tracks(String id);
-        /** Returns null on success or a message to send back as the error. */
         String route(JSONObject body, int precision);
         String destination(JSONObject body);
         String settings(JSONObject body);
@@ -90,7 +75,6 @@ final class NavServer {
             try {
                 socket.close();
             } catch (IOException ignored) {
-                // Closing only to end the accept loop.
             }
         }
         workers.shutdownNow();
@@ -105,7 +89,7 @@ final class NavServer {
             InputStream in = socket.getInputStream();
             ByteArrayOutputStream head = new ByteArrayOutputStream();
             int matched = 0;
-            while (matched < 4) { // read up to the blank line that ends the headers
+            while (matched < 4) {
                 int b = in.read();
                 if (b < 0) return;
                 head.write(b);

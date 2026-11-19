@@ -5,10 +5,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * A route to follow: a line, the manoeuvres along it, and where the car is on it. Pure geometry with no Android in
- * it, so it can be tested directly. Routes arrive from the phone (as a line plus steps) or from the offline router.
- */
 final class RouteTrack {
     static final int STRAIGHT = 0, SLIGHT_RIGHT = 1, RIGHT = 2, SHARP_RIGHT = 3, UTURN = 4,
             SHARP_LEFT = 5, LEFT = 6, SLIGHT_LEFT = 7, ARRIVE = 8, DEPART = 9, ROUNDABOUT = 10;
@@ -17,7 +13,6 @@ final class RouteTrack {
     static final long OFF_ROUTE_MS = 4000;
     static final double ARRIVED_METERS = 30;
 
-    /** One manoeuvre: what to do, on what street, and how far along the route it happens. */
     static final class Step {
         final int kind;
         final String street;
@@ -31,7 +26,6 @@ final class RouteTrack {
             this.atMeters = atMeters;
         }
 
-        /** The line to show: the supplied instruction, or one built from the kind and street. */
         String label() {
             if (!instruction.isEmpty()) return instruction.toUpperCase(Locale.US);
             String verb;
@@ -51,7 +45,6 @@ final class RouteTrack {
         }
     }
 
-    /** A step as it arrives from outside: any of the position fields may be missing (NaN). */
     static final class StepSpec {
         String instruction = "", street = "", type = "", modifier = "";
         double atMeters = Double.NaN, lat = Double.NaN, lon = Double.NaN;
@@ -65,7 +58,6 @@ final class RouteTrack {
     final Step[] steps;
     private final double[] x, y, cumulative;
 
-    // Where the car is.
     private int segment;
     private double along;
     private double offMeters;
@@ -94,8 +86,6 @@ final class RouteTrack {
         this.metersPerLon = metersPerLon;
         this.steps = resolve(specs);
     }
-
-    // ---- building the steps ----
 
     private Step[] resolve(List<StepSpec> specs) {
         List<Step> result = new ArrayList<>();
@@ -134,7 +124,6 @@ final class RouteTrack {
         }
     }
 
-    /** Distance along the route, in metres, of the point on it nearest a position. */
     double snap(double latitude, double longitude) {
         double px = longitude * metersPerLon, py = latitude * 110_574;
         double best = Double.POSITIVE_INFINITY, bestAlong = 0;
@@ -149,15 +138,12 @@ final class RouteTrack {
         return bestAlong;
     }
 
-    // ---- geometry helpers ----
-
     private double fraction(int i, double px, double py) {
         double dx = x[i + 1] - x[i], dy = y[i + 1] - y[i];
         double n = dx * dx + dy * dy;
         return n == 0 ? 0 : Math.max(0, Math.min(1, ((px - x[i]) * dx + (py - y[i]) * dy) / n));
     }
 
-    /** The point a given distance along the route, as {x, y} in metres. */
     private double[] pointAt(double meters) {
         meters = Math.max(0, Math.min(lengthMeters, meters));
         int i = Arrays.binarySearch(cumulative, meters);
@@ -168,7 +154,6 @@ final class RouteTrack {
         return new double[]{x[i] + t * (x[i + 1] - x[i]), y[i] + t * (y[i + 1] - y[i])};
     }
 
-    /** How far the route turns right (positive) or left (negative) at a point, from 30 m before to 30 m after. */
     double turnDegrees(double at) {
         double[] before = pointAt(at - 30), here = pointAt(at), after = pointAt(at + 30);
         double in = Math.toDegrees(Math.atan2(here[0] - before[0], here[1] - before[1]));
@@ -179,7 +164,6 @@ final class RouteTrack {
         return delta;
     }
 
-    /** The arrow for a turn of this many degrees (positive is right). */
     static int turnKind(double degrees) {
         double a = Math.abs(degrees);
         boolean right = degrees >= 0;
@@ -190,15 +174,11 @@ final class RouteTrack {
         return UTURN;
     }
 
-    // ---- following the car ----
-
-    /** Moves the car along the route to the point nearest a GPS fix. */
     void update(double latitude, double longitude, long nowMs) {
         double px = longitude * metersPerLon, py = latitude * 110_574;
         int bestSegment = segment;
         double best = Double.POSITIVE_INFINITY, bestAlong = along;
         int last = x.length - 2;
-        // Look a little behind and a good way ahead first; the car moves forward along its route.
         int from = Math.max(0, segment - 6);
         for (int i = from; i <= last; i++) {
             if (cumulative[i] > along + 800) break;
@@ -210,7 +190,7 @@ final class RouteTrack {
                 bestAlong = cumulative[i] + t * (cumulative[i + 1] - cumulative[i]);
             }
         }
-        if (best > OFF_ROUTE_METERS) { // lost or rejoined elsewhere: look at the whole route
+        if (best > OFF_ROUTE_METERS) {
             for (int i = 0; i <= last; i++) {
                 double t = fraction(i, px, py);
                 double d = Math.hypot(x[i] + t * (x[i + 1] - x[i]) - px, y[i] + t * (y[i + 1] - y[i]) - py);
@@ -245,7 +225,6 @@ final class RouteTrack {
 
     double remainingMeters() { return Math.max(0, lengthMeters - along); }
 
-    /** The next manoeuvre still ahead of the car, or null once only the arrival is left. */
     Step nextStep() {
         for (Step step : steps) {
             if (step.kind == DEPART) continue;
@@ -258,13 +237,11 @@ final class RouteTrack {
         return metersToNext(0);
     }
 
-    /** Metres to the next manoeuvre, counting the car as {@code extra} metres further on than the last fix. */
     double metersToNext(double extra) {
         Step next = nextStep();
         return Math.max(0, (next == null ? lengthMeters : next.atMeters) - along - extra);
     }
 
-    /** The manoeuvre after the next one (the arrival counts), or null. */
     Step stepAfterNext() {
         Step next = nextStep();
         if (next == null) return null;
@@ -277,13 +254,11 @@ final class RouteTrack {
         return null;
     }
 
-    /** Metres between the next manoeuvre and the one after it; infinity when there is no later one. */
     double metersBetweenNextAndAfter() {
         Step next = nextStep(), after = stepAfterNext();
         return next == null || after == null ? Double.POSITIVE_INFINITY : after.atMeters - next.atMeters;
     }
 
-    /** Estimated seconds left, scaling the route's own duration by the distance still to go. */
     double remainingSeconds() {
         return durationSeconds > 0 && lengthMeters > 0 ? durationSeconds * remainingMeters() / lengthMeters : Double.NaN;
     }

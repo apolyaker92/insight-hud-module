@@ -6,23 +6,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/**
- * Turns the JSON a phone sends into a RouteTrack. Two shapes are accepted:
- * <pre>
- * the HUD's own:  {"name": "...", "duration_s": 900, "polyline": "...", "polyline_precision": 5,
- *                  "points": [[lat, lon], ...],            (either polyline or points)
- *                  "steps": [{"instruction": "...", "street": "...", "type": "turn", "modifier": "left",
- *                             "at_m": 420, "location": [lat, lon]}]}
- * an OSRM-style response, forwarded as received:  {"routes": [{"geometry": "...", "duration": 900,
- *                  "legs": [{"steps": [{"name": "...", "distance": 420,
- *                            "maneuver": {"type": "turn", "modifier": "left", "location": [lon, lat]}}]}]}]}
- * </pre>
- * Steps may give their position as at_m, as a location, or (OSRM) by the distances of the steps before them.
- */
 final class RouteParser {
     private RouteParser() { }
 
-    /** Throws IllegalArgumentException with a message fit to send back to the phone. */
     static RouteTrack parse(JSONObject body, int defaultPrecision, String fallbackName) {
         try {
             if (body.has("routes")) return fromOsrm(body, defaultPrecision, fallbackName);
@@ -70,7 +56,7 @@ final class RouteParser {
         double[][] line;
         if (geometry instanceof String) {
             line = line((String) geometry, null, precision);
-        } else { // GeoJSON: coordinates are [lon, lat]
+        } else {
             JSONArray coordinates = ((JSONObject) geometry).getJSONArray("coordinates");
             double[] lat = new double[coordinates.length()], lon = new double[coordinates.length()];
             for (int i = 0; i < lat.length; i++) {
@@ -89,7 +75,7 @@ final class RouteParser {
                 JSONObject maneuver = step.optJSONObject("maneuver");
                 RouteTrack.StepSpec spec = new RouteTrack.StepSpec();
                 spec.street = step.optString("name", "");
-                spec.instruction = step.optString("instruction", ""); // some servers add a sentence of their own
+                spec.instruction = step.optString("instruction", "");
                 if (maneuver != null) {
                     spec.type = maneuver.optString("type", "");
                     spec.modifier = maneuver.optString("modifier", "");
@@ -133,7 +119,6 @@ final class RouteParser {
         return new double[][]{lat, lon};
     }
 
-    /** The first signed destination of an OSRM ramp ("I 90 East: Boston, Worcester"): its road number if given. */
     static String signedDestination(String destinations) {
         String first = destinations.split(",")[0].trim();
         int colon = first.indexOf(':');

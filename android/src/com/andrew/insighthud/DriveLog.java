@@ -13,10 +13,6 @@ import java.util.Date;
 import java.util.Locale;
 import org.json.JSONArray;
 
-/**
- * One CSV per drive in the app's external files folder (logs/drive-DATE.csv), a row a second while the car is
- * powered and readings are arriving. A new file starts after a long gap or when the HUD parks.
- */
 final class DriveLog {
     private static final String TAG = "HudDriveLog";
     private static final long MIN_GAP_MS = 1000;
@@ -33,7 +29,6 @@ final class DriveLog {
         this.folder = folder;
     }
 
-    /** Records at most one row a second. {@code now} is any monotonic clock in milliseconds. */
     void sample(long now, ObdBluetooth.Readings readings, Location gps, Double gpsMph,
                 OfflineRoadMap.RoadInfo info) {
         if (broken || readings == null || now - lastSampleAt < MIN_GAP_MS) return;
@@ -79,7 +74,6 @@ final class DriveLog {
         return value == null ? "" : String.format(Locale.US, "%.1f", value);
     }
 
-    /** Exports only GPS geometry, with separate lines across gaps in the log. */
     static String trackJson(File folder, String id) {
         if (id == null) {
             String[] names = folder == null ? null : folder.list((dir, name) -> isDriveLog(name));
@@ -117,7 +111,6 @@ final class DriveLog {
                         lastLon = lon;
                     }
                 } catch (NumberFormatException | java.text.ParseException | org.json.JSONException ignored) {
-                    // Logs can contain rows without a GPS fix.
                 }
             }
             if (line.length() > 1) lines.put(line);
@@ -136,7 +129,6 @@ final class DriveLog {
         try {
             out.close();
         } catch (IOException ignored) {
-            // Nothing more to do with a log that will not close.
         }
         out = null;
     }

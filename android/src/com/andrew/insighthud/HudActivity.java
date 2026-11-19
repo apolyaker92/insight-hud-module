@@ -61,7 +61,6 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/** Dedicated HUD launcher with classic Bluetooth OBD and an explicitly labeled display preview. */
 public final class HudActivity extends Activity {
     private SharedPreferences preferences;
     private HudView hud;
@@ -69,7 +68,6 @@ public final class HudActivity extends Activity {
     private boolean demo;
     private volatile boolean mapPreview;
     private volatile boolean fullMap;
-    /** The plate over the full-screen map: 0 everything, 1 just road, speed and limit, 2 none. */
     private int mapReadout;
     private static final String[] READOUT_NAMES = {"FULL", "SPEED", "OFF"};
     private static final String[] PALETTE_NAMES = {"GREEN", "AMBER", "BLUE"};
@@ -80,7 +78,6 @@ public final class HudActivity extends Activity {
     private long overSince, lastOverAlertAt;
     private DriveLog driveLog;
 
-    // Navigation: a route handed over by a phone (or, later, worked out here) that the HUD follows.
     private static final int NAV_PORT = 8765;
     private RouteTrack nav;
     private double[] navTileX, navTileY;
@@ -94,7 +91,7 @@ public final class HudActivity extends Activity {
     private final java.util.concurrent.ExecutorService routing = java.util.concurrent.Executors.newSingleThreadExecutor();
     private volatile boolean routingBusy;
     private final java.util.concurrent.atomic.AtomicInteger routeGeneration = new java.util.concurrent.atomic.AtomicInteger();
-    private double[] navGoal;          // {lat, lon} of a destination the HUD routed to itself, for rerouting
+    private double[] navGoal;
     private String navGoalName = "";
     private static final long RESUME_ROUTE_TIMEOUT_MS = 5000;
     private RouteTrack parkedRoute;
@@ -104,11 +101,10 @@ public final class HudActivity extends Activity {
     private final Runnable resumeRouteTimeout = () -> answerResumeRoute(false);
     private long lastRerouteAt;
 
-    // Quick config panel: hold F1 to open it. F1 picks the next row, F2 changes it, F3 closes; it also closes when idle.
     private static final int F1_HOLD_MS = 600, QUICK_IDLE_MS = 12_000, QUICK_REFRESH_MS = 2000;
     private boolean quickOpen;
     private int quickRow;
-    private List<String[]> quickHealth = new ArrayList<>(); // {label, value, "warn" or ""}
+    private List<String[]> quickHealth = new ArrayList<>();
     private String quickGasNote = "";
     private boolean f1Down, f1HoldFired;
     private final Runnable f1Hold = () -> {
@@ -265,7 +261,6 @@ public final class HudActivity extends Activity {
         advertiseNavigation();
     }
 
-    /** The routing graph, opened on first use; null when no hud-route.db has been copied to the phone. */
     private synchronized RouteDatabase routeDatabase() {
         if (routeDb == null && !routeDbTried) {
             routeDbTried = true;
@@ -275,10 +270,6 @@ public final class HudActivity extends Activity {
         return routeDb;
     }
 
-    /**
-     * Works out a route from where the car is to a place, on a background thread. Returns a message when it cannot
-     * even start (no graph, no GPS fix, already busy); otherwise null and the result arrives as the route itself.
-     */
     private synchronized String routeTo(double lat, double lon, String name, boolean reroute) {
         RouteDatabase graph = routeDatabase();
         if (graph == null) return "No routing data on the HUD (hud-route.db)";
@@ -340,7 +331,6 @@ public final class HudActivity extends Activity {
         hud.invalidate();
     }
 
-    /** True while the "cancel route?" prompt (opened with F4 during navigation) is showing. */
     private boolean cancelPrompt;
     private static final long CANCEL_PROMPT_MS = 10_000;
     private long cancelPromptDeadline;
@@ -394,9 +384,8 @@ public final class HudActivity extends Activity {
         }
     }
 
-    private static final double THEN_METERS = 450; // show "THEN ..." when the next two manoeuvres are this close
+    private static final double THEN_METERS = 450;
 
-    /** How far the car has probably moved since the last fix, so distances count down smoothly between fixes. */
     private double navAhead() {
         long now = SystemClock.elapsedRealtime();
         if (lastMapFix == null || !estimator.moving(now)) return 0;
@@ -405,7 +394,6 @@ public final class HudActivity extends Activity {
         return Math.min(80, Router.meters(lastMapFix.getLatitude(), lastMapFix.getLongitude(), estimate[0], estimate[1]));
     }
 
-    /** Moves the car along the route on each GPS fix and raises the arrival and off-route banners. */
     private void navUpdate(Location fix) {
         RouteTrack route = nav;
         if (route == null) return;
@@ -433,7 +421,6 @@ public final class HudActivity extends Activity {
         }
     }
 
-    /** The addresses the HUD can be reached on, one per line, for the pairing screen. */
     private String navAddresses() {
         StringBuilder out = new StringBuilder();
         try {
@@ -467,7 +454,6 @@ public final class HudActivity extends Activity {
     }
     private Location previousFix;
     private float derivedSpeedMps = Float.NaN;
-    /** Repaints on the minute so the header clock stays right without any other redraw. */
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
             if (hud != null) hud.invalidate();
@@ -491,7 +477,6 @@ public final class HudActivity extends Activity {
     private LocationManager locationManager;
     private Location gpsFix;
     private Location lastMapFix;
-    // Between the once-a-second fixes the marker is projected along the car's course and speed.
     private final PositionEstimator estimator = new PositionEstimator();
     private final Location estimatedFix = new Location("estimate");
     private float gpsCourse = Float.NaN;
@@ -503,7 +488,7 @@ public final class HudActivity extends Activity {
     private static final long GPS_UNAVAILABLE_MS = 20000;
     private static final long GPS_TEST_MS = 5 * 60 * 1000;
     private static final long GPS_RETRY_MS = 5000;
-    private volatile int brightnessMode; // 0 auto (light sensor), 1 high, 2 medium, 3 low
+    private volatile int brightnessMode;
     private static final String[] BRIGHTNESS_NAMES = {"AUTO", "HIGH", "MED", "LOW"};
     private static final float[] BRIGHTNESS_LEVELS = {0f, 1.0f, 0.45f, 0.08f};
     private SensorManager sensors;
@@ -564,13 +549,12 @@ public final class HudActivity extends Activity {
     private static final ObdBluetooth.Readings EMPTY_READINGS = new ObdBluetooth.Readings(null, null, null, null, null, null);
     private static final float[] DEMO_RPM = {820, 880, 1100, 1550, 2250, 3250, 4500, 5000, 3550, 2950,
             3050, 3450, 4200, 4700, 3150, 2680, 2530, 2420, 2450, 2400};
-    // Gauges the car has actually reported this session: throttle, load, MPG inputs, intake air.
     private final boolean[] seenGauge = new boolean[4];
     private final Alerts alerts = new Alerts();
     private final AutoStopTracker autoStop = new AutoStopTracker();
     private final SoundPolicy sounds = new SoundPolicy();
     private volatile int autoStopLoadId, autoStartLoadId;
-    private static final double WARM_F = 175;  // "operating temperature reached"
+    private static final double WARM_F = 175;
     private static final double HOT_F = 230;   // coolant warning; the dash gauge remains authoritative
     private boolean linkLive, failureAnnounced, setupAnnounced, sawCool, warmAnnounced, hotAnnounced, fixAnnounced;
     private int failedAttempts;
@@ -627,7 +611,6 @@ public final class HudActivity extends Activity {
                 float metres = previousFix.distanceTo(location);
                 if (seconds > 0.3f && seconds < 6f && metres >= 5f) {
                     derivedSpeedMps = metres / seconds;
-                    // Providers that send no bearing (and test fixes) still give a heading from the movement.
                     if (!location.hasBearing() && derivedSpeedMps >= 2f) {
                         gpsCourse = (float) RoadLookup.normalizeBearing(previousFix.bearingTo(location));
                     }
@@ -717,7 +700,7 @@ public final class HudActivity extends Activity {
         mirror = preferences.getBoolean("mirror", false);
         brightnessMode = preferences.contains("brightnessMode")
                 ? Math.max(0, Math.min(3, preferences.getInt("brightnessMode", 0)))
-                : preferences.getBoolean("dim", false) ? 3 : 0; // The old NIGHT toggle becomes LOW.
+                : preferences.getBoolean("dim", false) ? 3 : 0;
         sensors = getSystemService(SensorManager.class);
         lightSensor = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_LIGHT);
         sounds.mode = Math.max(0, Math.min(SoundPolicy.MODE_NAMES.length - 1, preferences.getInt("soundMode", 0)));
@@ -853,7 +836,6 @@ public final class HudActivity extends Activity {
         return lightSensor != null && autoLevel <= SoundPolicy.DARK_LEVEL;
     }
 
-    /** Every effect goes through here so mode, volume and night-quiet apply to all of them. */
     private void playSound(int id, float base, SoundPolicy.Kind kind) {
         if (switchSounds == null || id == 0) return;
         float gain = sounds.gain(kind, ambientDark());
@@ -862,7 +844,6 @@ public final class HudActivity extends Activity {
         switchSounds.play(id, volume, volume, 1, 0, 1);
     }
 
-    /** Landscape either way up, for a phone mounted with its top edge on the left or the right. */
     private void applyOrientation() {
         setRequestedOrientation(preferences.getBoolean("flipScreen", true)
                 ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
@@ -872,7 +853,7 @@ public final class HudActivity extends Activity {
     private void saveSoundSettings() {
         preferences.edit().putInt("soundMode", sounds.mode).putInt("soundLevel", sounds.level)
                 .putBoolean("nightQuiet", sounds.nightQuiet).apply();
-        playSound(switchSoundId, 0.5f, SoundPolicy.Kind.FEEDBACK); // lets you hear the new level
+        playSound(switchSoundId, 0.5f, SoundPolicy.Kind.FEEDBACK);
         if (hud != null) hud.invalidate();
     }
 
@@ -953,7 +934,7 @@ public final class HudActivity extends Activity {
             main.removeCallbacks(finishShutdown);
             accessoryActive = true;
             resetTripAlerts();
-            demo = false; // A preview left on must not hide the real drive.
+            demo = false;
             shutdownReport = null;
             shutdownStartedAt = 0;
             parkedBlank = false;
@@ -999,7 +980,7 @@ public final class HudActivity extends Activity {
         boolean reconnect = thermalLevel == THERMAL_HOLD || next == THERMAL_HOLD;
         int previousLevel = thermalLevel;
         thermalLevel = next;
-        if (next == THERMAL_HOLD) playAlertSound(Alerts.CRITICAL); // the hold screen takes over the banner
+        if (next == THERMAL_HOLD) playAlertSound(Alerts.CRITICAL);
         else if (next == THERMAL_LIMIT && previousLevel == THERMAL_NORMAL) raiseAlert("PHONE HOT / DIMMING", Alerts.WARN);
         else if (next == THERMAL_NORMAL) raiseAlert("THERMAL NORMAL", Alerts.INFO);
         thermalBlank = false;
@@ -1111,7 +1092,6 @@ public final class HudActivity extends Activity {
         hud.invalidate();
     }
 
-    /** While parked and blank nothing should draw power: backlight off, light sensor and chime player released. */
     private void enterStandbyPower(boolean standby) {
         applyBrightness();
         updateLightSensor();
@@ -1135,8 +1115,6 @@ public final class HudActivity extends Activity {
         updateLightSensor();
         updateMap();
         releaseStartupSound();
-        // Dialogs, permission prompts and Android settings stop the activity; keep the
-        // OBD link and trip sampling alive for the drive. Otherwise release the adapter.
         if (!keepObdInBackground() && obd != null) {
             obd.stop();
             main.removeCallbacks(staleReadings);
@@ -1145,7 +1123,6 @@ public final class HudActivity extends Activity {
         super.onStop();
     }
 
-    /** Loads the chime ahead of time so power-up never waits on file decoding. */
     private void preloadStartupSound() {
         if (startupSound != null) return;
         try {
@@ -1201,10 +1178,6 @@ public final class HudActivity extends Activity {
     private boolean startupPlaying;
     private boolean startupClockLogged;
 
-    /**
-     * Milliseconds into the start animation. While the chime plays this is the audio's own position,
-     * which already includes the output delay, so the picture follows what is heard; otherwise wall time.
-     */
     private long startupClock(long now) {
         long wall = now - startupStartedAt;
         MediaPlayer player = startupSound;
@@ -1218,7 +1191,6 @@ public final class HudActivity extends Activity {
                             + (long) (elapsedNanos / 1e6 * stamp.getMediaClockRate());
                 }
                 if (audioMs < 0) audioMs = player.getCurrentPosition();
-                // Until audio is actually coming out, hold the picture at zero (but never past 400 ms).
                 if (audioMs > 0 || wall < 400) {
                     if (!startupClockLogged && wall > 1000) {
                         startupClockLogged = true;
@@ -1355,14 +1327,12 @@ public final class HudActivity extends Activity {
         return gpsFix != null && region.contains(gpsFix.getLatitude(), gpsFix.getLongitude());
     }
 
-    /** The map takes the whole panel, with speed and rpm laid over its corner. */
     private boolean fullMapActive() {
         return fullMap && mapPreview && thermalLevel == THERMAL_NORMAL;
     }
 
     private static final Pattern PROBE_REQUEST = Pattern.compile("(01|02|09|21|22)[0-9A-F]{2,6}");
 
-    /** Read-only raw OBD requests from `am start --es obd_probe 2101,2102`; replies go to logcat. */
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
@@ -1419,8 +1389,6 @@ public final class HudActivity extends Activity {
         hud.invalidate();
     }
 
-    /** GPS speed in mph, or null when GPS is off, has no fix, or the fix is too old. */
-    /** Asks the map for the road, limit, town and fuel at a fix, at most about once every couple of seconds. */
     private void lookupRoadInfo(Location location) {
         if (!roadInfoOn || demo || roadMap == null) return;
         long now = SystemClock.uptimeMillis();
@@ -1444,13 +1412,11 @@ public final class HudActivity extends Activity {
         });
     }
 
-    /** The info to show: simulated in Demo, otherwise only while there is a live fix. */
     private OfflineRoadMap.RoadInfo shownRoadInfo() {
         if (!roadInfoOn) return null;
         return demo ? DEMO_ROAD_INFO : gpsFix == null ? null : roadInfo;
     }
 
-    /** A banner for the hazards that deserve one; signals, stop signs, exits and rest areas just show in the readout. */
     private void announceAhead(OfflineRoadMap.RoadInfo info) {
         if (info == null || demo) return;
         if (info.aheadKind == RoadLookup.CROSSING) raiseAlert("RAIL CROSSING AHEAD", Alerts.WARN);
@@ -1458,7 +1424,6 @@ public final class HudActivity extends Activity {
         else if (info.aheadKind == RoadLookup.CURVE) raiseAlert("CURVE AHEAD", Alerts.INFO);
     }
 
-    /** The warning line for the thing ahead, such as "SIGNAL  450 FT", or null when nothing is ahead. */
     private static String aheadLine(OfflineRoadMap.RoadInfo info) {
         if (info == null || info.aheadKind == 0) return null;
         String what;
@@ -1480,7 +1445,6 @@ public final class HudActivity extends Activity {
         return readings != null && readings.speedMph != null ? readings.speedMph : gpsSpeedMph();
     }
 
-    /** A quiet banner when well over the posted limit for a few seconds, at most every 90 seconds. */
     private void checkOverLimit() {
         OfflineRoadMap.RoadInfo info = roadInfo;
         Double speed = currentSpeedMph();
@@ -1492,7 +1456,7 @@ public final class HudActivity extends Activity {
         if (overSince == 0) overSince = now;
         if (now - overSince >= 4000 && now - lastOverAlertAt >= 90_000) {
             lastOverAlertAt = now;
-            raiseAlert("OVER LIMIT " + info.limitMph, Alerts.INFO, true); // a banner only, no tone
+            raiseAlert("OVER LIMIT " + info.limitMph, Alerts.INFO, true);
         }
     }
 
@@ -1549,7 +1513,6 @@ public final class HudActivity extends Activity {
         rpmCount = Math.min(rpmCount + 1, rpmHistory.length);
     }
 
-    /** Settings: the everyday options first, then sound, then the adapter and system items. */
     private void showLinkMenu() {
         if (!hasBluetoothPermission()) {
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT}, 23);
@@ -1753,7 +1716,7 @@ public final class HudActivity extends Activity {
         if (cancelPrompt && keyCode >= KeyEvent.KEYCODE_F1 && keyCode <= KeyEvent.KEYCODE_F4) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0 && hasWindowFocus()) {
                 if (keyCode == KeyEvent.KEYCODE_F1) cancelRoute();
-                else dismissCancelPrompt(); // F2, F3 or F4 keeps the route
+                else dismissCancelPrompt();
             }
             return true;
         }
@@ -1777,7 +1740,7 @@ public final class HudActivity extends Activity {
             case KeyEvent.KEYCODE_F4: control = 10; break;
             default: return super.dispatchKeyEvent(event);
         }
-        if ((control == 6 || control == 7) && !mapPreview && openPlaces == null) return true; // Heading and range only act on the map.
+        if ((control == 6 || control == 7) && !mapPreview && openPlaces == null) return true;
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
                 && hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD
                 && (startupStartedAt == 0 || startupClock(SystemClock.uptimeMillis()) >= STARTUP_DURATION_MS)) {
@@ -1860,12 +1823,11 @@ public final class HudActivity extends Activity {
         updateMap();
     }
 
-    /** F1: a tap changes the view (or moves down the quick panel), a hold opens or closes the quick panel. */
     private boolean handleF1(KeyEvent event) {
         boolean usable = hasWindowFocus() && !parkedBlank && shutdownStartedAt == 0 && thermalLevel != THERMAL_HOLD
                 && (startupStartedAt == 0 || startupClock(SystemClock.uptimeMillis()) >= STARTUP_DURATION_MS);
         if (!usable) return true;
-        if (openPlaces != null) { // the saved places list uses F1 to choose, straight away
+        if (openPlaces != null) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) chooseSavedPlace();
             return true;
         }
@@ -1925,7 +1887,7 @@ public final class HudActivity extends Activity {
             closeQuick();
             return;
         } else if (keyCode == KeyEvent.KEYCODE_F4 || quickRow == 0) {
-            activateControl(2); // brightness
+            activateControl(2);
         } else if (quickRow == 2) {
             playSound(switchSoundId, 0.42f, SoundPolicy.Kind.UI);
             routeToNearestGas();
@@ -1937,10 +1899,6 @@ public final class HudActivity extends Activity {
         hud.invalidate();
     }
 
-    /**
-     * Routes to the fuel stop that takes the least time to reach, out of the nearest few in the map pack. Works on the
-     * HUD alone, so it needs the routing data and a GPS fix; the panel says what is missing.
-     */
     private void routeToNearestGas() {
         Location from = gpsFix;
         if (from == null) {
@@ -2006,7 +1964,6 @@ public final class HudActivity extends Activity {
         hud.invalidate();
     }
 
-    /** Phone and keyboard health for the quick panel, worked out here so drawing stays cheap. */
     private void refreshQuick() {
         List<String[]> rows = new ArrayList<>();
         boolean low = battery >= 0 && battery < 20 && !powered;
@@ -2021,7 +1978,6 @@ public final class HudActivity extends Activity {
         quickHealth = rows;
     }
 
-    /** Keyboard battery levels read straight from the keyboard's Bluetooth Battery Service, by device name. */
     private final java.util.Map<String, Integer> gattBatteryLevels = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Map<String, Long> gattBatteryAt = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.ArrayDeque<BluetoothDevice> gattQueue = new java.util.ArrayDeque<>();
@@ -2141,7 +2097,6 @@ public final class HudActivity extends Activity {
         }
     }
 
-    /** One row per attached physical keyboard, with its battery where Android can read it. */
     private List<String[]> peripheralRows() {
         List<String[]> rows = new ArrayList<>();
         java.util.Map<String, Integer> bluetoothLevels = new java.util.HashMap<>();
@@ -2211,7 +2166,6 @@ public final class HudActivity extends Activity {
                 showTripHistory();
                 break;
             case 4:
-                // View cycles full map, then the split map beside speed, then speed beside the gauges.
                 setHudView(!mapPreview || fullMap, !mapPreview);
                 break;
             case 5:
@@ -2220,7 +2174,6 @@ public final class HudActivity extends Activity {
             case 6:
                 headingUp = !headingUp;
                 preferences.edit().putBoolean("headingUp", headingUp).apply();
-                // The map's two-step lock-then-swing only runs when a course is known; sound matches it.
                 int lockSound = headingUp ? lockHeadingSoundId : lockNorthSoundId;
                 if (mapPreview && thermalLevel == THERMAL_NORMAL && lockSound != 0
                         && (demo || (gpsFix != null && !Float.isNaN(gpsCourse)))) {
@@ -2232,7 +2185,6 @@ public final class HudActivity extends Activity {
                 float zoomBefore = RANGE_ZOOM[mapRange];
                 mapRange = (mapRange + 1) % RANGE_NAMES.length;
                 preferences.edit().putInt("mapRange", mapRange).apply();
-                // Sound follows the map's zoom animation, so it only plays while the map is showing.
                 boolean zoomingIn = RANGE_ZOOM[mapRange] > zoomBefore;
                 int zoomSound = zoomingIn ? zoomInSoundId : zoomOutSoundId;
                 if (mapPreview && thermalLevel == THERMAL_NORMAL && zoomSound != 0) {
@@ -2248,7 +2200,6 @@ public final class HudActivity extends Activity {
                 preferences.edit().putBoolean("fullMap", fullMap).apply();
                 break;
             case 10:
-                // While a route is running F4 asks whether to cancel it; otherwise it lists saved places.
                 if (nav != null) showCancelPrompt();
                 else showSavedPlaces();
                 break;
@@ -2260,30 +2211,27 @@ public final class HudActivity extends Activity {
     }
 
     private final class HudView extends View {
-        // The palette, set by applyPalette(): the lit instrument colour, a dimmer text colour, rules and frames,
-        // unlit segments, and the dark ground everything is drawn on.
         private int ACCENT, MUTED, LINE, UNLIT, BACKGROUND;
 
-        /** The ground colour at a given opacity (0 to 255). */
         private int ground(int alpha) {
             return (alpha << 24) | (BACKGROUND & 0xFFFFFF);
         }
 
         void applyPalette() {
             int palette = preferences.getInt("palette", 0);
-            if (palette == 0) { // green phosphor
+            if (palette == 0) {
                 ACCENT = 0xFF4DFF88;
                 MUTED = 0xFF3FB468;
                 LINE = 0xFF1D5C36;
                 UNLIT = 0xFF0A1D11;
                 BACKGROUND = 0xFF020A05;
-            } else if (palette == 2) { // blue
+            } else if (palette == 2) {
                 ACCENT = 0xFF4DB8FF;
                 MUTED = 0xFF3F8FC9;
                 LINE = 0xFF1D4E78;
                 UNLIT = 0xFF0A1A2B;
                 BACKGROUND = 0xFF020711;
-            } else { // amber
+            } else {
                 ACCENT = 0xFFFFB64F;
                 MUTED = 0xFFB1874B;
                 LINE = 0xFF61451F;
@@ -2359,11 +2307,9 @@ public final class HudActivity extends Activity {
         private int pressedControl = -1;
         private final int[] digitSegments = {63, 6, 91, 79, 102, 109, 125, 7, 127, 111};
 
-        /** Extra rows below the standard frame, set each draw so the frame fills the screen's height. */
         private float extraRows = 60;
         private float extra() { return extraRows; }
 
-        /** Gap kept between the frame and the screen edge, in pixels. */
         private static final float EDGE_PIXELS = 12;
         private static final float FRAME_LEFT = 40, FRAME_TOP = 34, FRAME_WIDTH = 1200, FRAME_BASE_HEIGHT = 518;
         private static final float MAX_EXTRA = 110;
@@ -2378,10 +2324,6 @@ public final class HudActivity extends Activity {
             setFocusable(true);
         }
 
-        /**
-         * Scales the frame to fill the screen with a thin margin, staying clear of the camera notch, and stretches
-         * it taller to use whatever height the width leaves over.
-         */
         private void fitFrame() {
             float insetLeft = 0, insetTop = 0, insetRight = 0, insetBottom = 0;
             WindowInsets insets = getRootWindowInsets();
@@ -2569,7 +2511,6 @@ public final class HudActivity extends Activity {
             invalidate();
         }
 
-        /** The quick panel: big print for a glance while driving. */
         private void drawQuickConfig(Canvas canvas) {
             float bottom = 552 + extra();
             paint.setStyle(Paint.Style.FILL);
@@ -2609,7 +2550,6 @@ public final class HudActivity extends Activity {
                     640, bottom - 28, 22, MUTED, false, Paint.Align.CENTER);
         }
 
-        /** A banner that takes over the header: calm for info, flashing for warnings and critical alerts. */
         private void drawAlert(Canvas canvas, Alerts.Alert alert, long now) {
             long age = now - alert.shownAt;
             boolean flashing = alert.level > Alerts.INFO;
@@ -2621,7 +2561,7 @@ public final class HudActivity extends Activity {
             canvas.drawRect(41, 35, 1239, 87, paint);
             border(canvas, 40, 34, 1240, 88);
             String prefix = alert.level == Alerts.CRITICAL ? "!! " : alert.level == Alerts.WARN ? "! " : "> ";
-            float slide = Math.min(1f, age / 180f); // text eases in from the left
+            float slide = Math.min(1f, age / 180f);
             text(canvas, prefix + alert.text, 640 - (1 - slide) * 80, 72, 30, ink, true, Paint.Align.CENTER);
         }
 
@@ -2829,7 +2769,6 @@ public final class HudActivity extends Activity {
             }
         }
 
-        /** Throttle, load, estimated MPG and (as a fallback) intake air; only gauges the car reports. */
         private void drawMetrics(Canvas canvas, ObdBluetooth.Readings reading) {
             boolean anySeen = seenGauge[0] || seenGauge[1] || seenGauge[2] || seenGauge[3];
             int slot = 0;
@@ -2868,7 +2807,6 @@ public final class HudActivity extends Activity {
             return road;
         }
 
-        /** The map's one-line status: under the panel normally, in the map's corner when it fills the panel. */
         private void mapNote(Canvas canvas, String note, int color) {
             if (fullMapActive()) text(canvas, note, MAP_RIGHT - 10, mapBottom() - 10, 12, color, false, Paint.Align.RIGHT);
             else text(canvas, note, mapLeft(), 469 + extra(), 12, color, false);
@@ -3027,7 +2965,6 @@ public final class HudActivity extends Activity {
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setColor(LINE);
             float strokeScale = MAP_TILE_PIXELS * rangeZoom * (1 + cameraLead * 0.23f);
-            // Water (long dashes) and rail (dots) sit under the roads, only where the local pack has them.
             if (dashScale != strokeScale) {
                 dashScale = strokeScale;
                 waterDash = new DashPathEffect(new float[]{11 / strokeScale, 6 / strokeScale}, 0);
@@ -3054,7 +2991,6 @@ public final class HudActivity extends Activity {
 
             drawSavedPlaceMarkers(canvas, scene);
 
-            // Keep the reflected display legible by separating labels from each other and the marker.
             int labelCount = 0;
             for (OfflineRoadMap.Label label : scene.labels) {
                 mapPoint[0] = label.x;
@@ -3093,11 +3029,6 @@ public final class HudActivity extends Activity {
             if (gpsUnavailable) drawSatelliteWarning(canvas);
         }
 
-        /** Speed and rpm over the corner of a full-screen map, on a dark plate so the roads never fight the digits. */
-        /**
-         * The plate over the map's corner. Compact keeps only what a driver reads at a glance: the road, the speed,
-         * the limit, and a warning when something is ahead; the full plate adds rpm and the nearest fuel.
-         */
         private void drawMapReadouts(Canvas canvas, ObdBluetooth.Readings displayed, String speed, boolean fromGps,
                                      boolean compact) {
             OfflineRoadMap.RoadInfo info = shownRoadInfo();
@@ -3128,13 +3059,11 @@ public final class HudActivity extends Activity {
             }
         }
 
-        /** The time of day, in the phone's 12 or 24 hour style. */
         private String clockText() {
             String pattern = android.text.format.DateFormat.is24HourFormat(HudActivity.this) ? "HH:mm" : "h:mm a";
             return new SimpleDateFormat(pattern, Locale.US).format(new Date());
         }
 
-        /** The heading as "NE 047", from the GPS course, or null without a fix and a direction of travel. */
         private String headingText() {
             if (demo) return "NE 045\u00b0";
             if (gpsFix == null || Float.isNaN(gpsCourse)) return null;
@@ -3225,7 +3154,6 @@ public final class HudActivity extends Activity {
         private final Path routePath = new Path();
         private final Path remainingRoutePath = new Path();
 
-        /** The route as a heavy line over the roads, and a ring at the destination. */
         private void drawRouteOverlay(Canvas canvas, OfflineRoadMap.Scene scene, float strokeScale) {
             double along = nav.alongMeters();
             if (scene.x != routeSceneX || scene.y != routeSceneY || navVersion != routeDrawVersion
@@ -3257,7 +3185,6 @@ public final class HudActivity extends Activity {
             paint.setColor(BACKGROUND);
             paint.setStrokeWidth(9f / strokeScale);
             canvas.drawPath(routePath, paint);
-            // The route is plain white: the part already driven is dimmer, the part ahead full strength.
             paint.setColor(0x66FFFFFF);
             paint.setStrokeWidth(3f / strokeScale);
             canvas.drawPath(routePath, paint);
@@ -3286,7 +3213,6 @@ public final class HudActivity extends Activity {
             return String.format(Locale.US, "%.1f MI", meters / 1609.344);
         }
 
-        /** "TURN LEFT ONTO MAIN ST" plus how far, for the gauges view's footer. */
         private String navFooter() {
             RouteTrack route = nav;
             if (route == null) return null;
@@ -3296,7 +3222,6 @@ public final class HudActivity extends Activity {
             return navDistance(route.metersToNext(navAhead())) + "  " + what;
         }
 
-        /** The turn strip over the map: arrow, distance to the next manoeuvre, what to do, and the way left. */
         private void drawNavStrip(Canvas canvas) {
             RouteTrack route = nav;
             float left = mapLeft() + 8, top = mapTop() + 8;
@@ -3331,7 +3256,6 @@ public final class HudActivity extends Activity {
             }
         }
 
-        /** A bent arrow for a turn, a ring for a roundabout, a U for a U-turn, a target for arriving. */
         private void drawTurnArrow(Canvas canvas, float cx, float cy, int kind) {
             canvas.save();
             canvas.translate(cx, cy);
@@ -3409,7 +3333,6 @@ public final class HudActivity extends Activity {
             }
             String tail = "  /  " + place;
             if (road.length() + tail.length() <= max) return road + tail;
-            // Too long: shorten the street so the town still fits, or drop the town if it is long itself.
             int room = max - tail.length();
             return room >= 10 ? road.substring(0, room) + tail : (road.length() > max ? road.substring(0, max) : road);
         }
@@ -3419,7 +3342,6 @@ public final class HudActivity extends Activity {
             return String.format(Locale.US, "FUEL  %s  %.1f MI %s", name, info.fuelMiles, info.fuelBearing);
         }
 
-        /** The posted limit in a box; filled when the car is over it, dashes when the data has no limit here. */
         private void drawLimitBadge(Canvas canvas, float x, float y, float width, float height, int limit,
                                     Double speed) {
             boolean over = limit > 0 && speed != null && speed > limit;
@@ -3666,7 +3588,6 @@ public final class HudActivity extends Activity {
                     && (!hasPreciseLocation() || !gpsEnabled() || (!powered && !accessoryActive))) return 5;
             if (thermalLevel == THERMAL_NORMAL && mapPreview && mapX >= mapLeft() && mapX <= MAP_RIGHT
                     && y >= mapTop() && y <= (fullMapActive() ? 520 : 480) + extra()) return 9;
-            // The rest of the frame, under the header and above the footer, steps through the views.
             if (mapX >= 40 && mapX <= 1240 && y >= 88 && y <= 480 + extra()) return 4;
             return -1;
         }

@@ -6,11 +6,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Locale;
 
-/**
- * A scripted ELM327 on a ZE1-like ECU, for testing the real polling and parsing path without a car.
- * It answers only the PIDs that Insight owners report working over a plain adapter; everything else
- * (including Honda IMA requests) replies NO DATA. The values follow a looping drive cycle.
- */
 final class SimulatedElm implements Closeable {
     static final String ADDRESS = "SIM:ELM327";
     static final String NAME = "SIMULATED ADAPTER";
@@ -26,7 +21,6 @@ final class SimulatedElm implements Closeable {
     private boolean closed;
     private boolean initialised;
     private String protocol = "";
-    /** Test hooks: make the bus init fail like a fussy adapter. */
     String onlyAnswersOn;
     int failBusInits;
 
@@ -141,7 +135,6 @@ final class SimulatedElm implements Closeable {
             case "0114":
                 return reply("41 14 " + hex(90 + 40 * Math.sin(seconds() * 2)) + " FF");
             default:
-                // Unsupported PIDs and Honda-specific modes (IMA) are not answered.
                 return request.matches("[0-9A-F]+") ? reply("NO DATA") : reply("?");
         }
     }
@@ -155,7 +148,6 @@ final class SimulatedElm implements Closeable {
         return String.format(Locale.US, "%02X", rounded);
     }
 
-    /** One simulated moment of the drive cycle. */
     static final class Drive {
         final double mph, rpm, throttle, throttleLoad;
         private final double elapsed;
@@ -187,7 +179,6 @@ final class SimulatedElm implements Closeable {
         else if (t < 68) { mph = lerp(t, 55, 68, 45, 62); throttle = 45; }
         else if (t < 78) { mph = 62; throttle = 25; }
         else { mph = lerp(t, 78, 90, 62, 0); throttle = 0; }
-        // Auto-stop: the engine is off while standing, and a CVT keeps revs low.
         double rpm = mph < 1 && t < 8 && t > 2 ? 0 : mph < 1 ? 820 : Math.max(950, 900 + mph * 22 + throttle * 6);
         double load = mph < 1 ? 15 : Math.min(95, 14 + throttle * 1.1 + mph * 0.25);
         return new Drive(total, mph, rpm, throttle, load);

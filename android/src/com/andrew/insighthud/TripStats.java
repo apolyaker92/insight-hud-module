@@ -5,7 +5,6 @@ import java.util.Locale;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/** A trip starts at the first live indication of engine activity or movement. */
 final class TripStats {
     private static final long MAX_SPEED_GAP_MS = 6000;
     private long startedAt = -1;

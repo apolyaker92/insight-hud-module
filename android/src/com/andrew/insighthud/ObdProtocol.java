@@ -4,7 +4,6 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Parses header-free ELM327 responses. Missing or malformed readings stay unavailable. */
 final class ObdProtocol {
     private static final Pattern VOLTAGE = Pattern.compile("(?m)^\\s*(\\d{1,2}(?:\\.\\d+)?)\\s*V\\s*$");
 
@@ -54,9 +53,6 @@ final class ObdProtocol {
         return bytes == null ? null : (bytes[0] & 0xFF) * 100.0 / 255;
     }
 
-    // Fuel use is estimated from calculated engine load (normalized air mass), RPM and the Insight's
-    // 0.995 L displacement, assuming a stoichiometric mixture. The real engine runs lean at cruise, so
-    // treat the result as relative feedback, not an exact figure.
     private static final double DISPLACEMENT_LITERS = 0.995;
     private static final double AIR_GRAMS_PER_LITER = 1.184;
     private static final double STOICH_AIR_FUEL = 14.7;

@@ -1,10 +1,5 @@
 package com.andrew.insighthud;
 
-/**
- * Spots the Insight's idle stop and restart from RPM. A stop only counts when the car is standing still,
- * the engine had already been running, and zero RPM holds for a moment; a key-off (power lost) or a
- * missing reading never counts, and the first start of a trip is not a "restart".
- */
 final class AutoStopTracker {
     enum Event { NONE, STOP, RESTART }
 

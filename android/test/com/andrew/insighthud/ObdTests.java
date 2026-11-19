@@ -6,12 +6,10 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
-/** Plain-Java checks for the OBD parsing and the simulated adapter. Run with android/test/run-tests.sh. */
 public final class ObdTests {
     private static int failures;
     private static long fakeNow;
 
-    /** Packs segments (ax, ay, bx, by, ...) as the road pack does: little-endian uint16 fractions of a tile. */
     private static byte[] segments(double... values) {
         byte[] bytes = new byte[values.length * 2];
         for (int i = 0; i < values.length; i++) {
@@ -24,12 +22,10 @@ public final class ObdTests {
 
     private static final double TEST_LAT = 42.6, TEST_LON = -73.8;
 
-    /** Lat/lon for a point this many metres east and north of the test origin. */
     private static double[] at(double east, double north) {
         return new double[]{TEST_LAT + north / 110_574, TEST_LON + east / (111_320 * Math.cos(Math.toRadians(TEST_LAT)))};
     }
 
-    /** East 400 m, then north 400 m, a point every 20 m: a single left turn at 400 m. */
     private static RouteTrack lRoute(java.util.List<RouteTrack.StepSpec> specs, double seconds) {
         java.util.List<double[]> points = new java.util.ArrayList<>();
         for (int e = 0; e <= 400; e += 20) points.add(at(e, 0));
@@ -245,7 +241,6 @@ public final class ObdTests {
         }
         check("it gives up cleanly when nothing answers", gaveUp);
 
-        // A horizontal road across the middle of a tile, and a vertical one down its right side.
         byte[] roads = segments(0, 0.5, 1, 0.5, 0.9, 0, 0.9, 1);
         check("a point on a road is zero away", RoadLookup.nearestSquared(roads, 0.3, 0.5) < 1e-9);
         check("distance is to the nearest road", Math.abs(Math.sqrt(RoadLookup.nearestSquared(roads, 0.3, 0.45)) - 0.05) < 1e-4
@@ -300,7 +295,6 @@ public final class ObdTests {
                         && !RoadLookup.aheadEligible(RoadLookup.CURVE, "35", 100, 90, 90, 34)
                         && !RoadLookup.aheadEligible(RoadLookup.CURVE, "x", 100, 90, 90, 45));
 
-        // Route lines and following them.
         double[][] decoded = Polyline.decode("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5);
         check("a published polyline decodes to its three points", decoded[0].length == 3
                 && Math.abs(decoded[0][0] - 38.5) < 1e-9 && Math.abs(decoded[1][0] + 120.2) < 1e-9
@@ -360,7 +354,6 @@ public final class ObdTests {
                 && RouteTrack.turnKind(35) == RouteTrack.SLIGHT_RIGHT && RouteTrack.turnKind(-90) == RouteTrack.LEFT
                 && RouteTrack.turnKind(140) == RouteTrack.SHARP_RIGHT && RouteTrack.turnKind(-175) == RouteTrack.UTURN);
 
-        // ---- offline router ----
         RouteTile gridTile = RouteTile.decode(java.util.Base64.getDecoder().decode(RouterTestData.TILE));
         check("tile decodes", gridTile.nodeCount() == 16 && gridTile.edgeCount() == 46);
         check("tile edge names", gridTile.nameOf(0).startsWith("Row") || gridTile.nameOf(0).startsWith("Col"));
@@ -388,7 +381,7 @@ public final class ObdTests {
         Router.Result facingSouth = router.route(midLat, midLon, 180, n31[0], n31[1]);
         check("heading picks the side of a two-way road", facingNorth.error == null && facingSouth.error == null
                 && facingNorth.meters < 200 && facingSouth.meters > facingNorth.meters + 100);
-        double[] ramp = {42.005, -72.998}; // the node at the end of the exit ramp
+        double[] ramp = {42.005, -72.998};
         Router.Result exitRoute = router.route(n30[0], n30[1], Double.NaN, ramp[0], ramp[1]);
         check("route to the ramp is found", exitRoute.error == null && exitRoute.meters > 150);
         boolean exitStep = false;
@@ -404,17 +397,15 @@ public final class ObdTests {
         check("a route to the same place is tiny", router.route(n01[0], n01[1], Double.NaN, n01[0], n01[1]).meters < 5
                 || router.route(n01[0], n01[1], Double.NaN, n01[0], n01[1]).error != null);
 
-        // ---- position estimator ----
         PositionEstimator est = new PositionEstimator();
         check("no estimate before a fix", est.at(0) == null && !est.moving(0));
         double lat0 = 42.0, lon0 = -73.0;
-        est.fix(lat0, lon0, 20, 90, 0, 0); // 20 m/s due east
+        est.fix(lat0, lon0, 20, 90, 0, 0);
         double[] half = est.at(500);
         check("projects east at speed", Math.abs(Router.meters(lat0, lon0, half[0], half[1]) - 10) < 0.3 && half[1] > lon0);
         check("stays on its latitude going east", Math.abs(half[0] - lat0) < 1e-7);
         check("projection is capped at three seconds", Math.abs(Router.meters(lat0, lon0, est.at(9000)[0], est.at(9000)[1]) - 60) < 0.5);
         check("moving until the projection runs out", est.moving(1000) && !est.moving(9000));
-        // The next fix is 25 m along (the projection said 20 m): the marker must not jump.
         double[] before = est.at(1000);
         est.fix(lat0, lon0 + 25 / (111_320 * Math.cos(Math.toRadians(lat0))), 20, 90, 1000, 1000);
         double[] after = est.at(1000);
@@ -423,7 +414,6 @@ public final class ObdTests {
         double fixLon = lon0 + 25 / (111_320 * Math.cos(Math.toRadians(lat0)));
         double expected = 25 + 20 * 0.7;
         check("it settles onto the new projection", Math.abs(Router.meters(lat0, lon0, settled[0], settled[1]) - expected) < 0.5 && settled[1] > fixLon);
-        // A real jump snaps.
         est.fix(lat0 + 0.01, lon0, 20, 90, 2000, 2000);
         check("a big jump snaps", Router.meters(lat0 + 0.01, lon0, est.at(2000)[0], est.at(2000)[1]) < 0.5);
         PositionEstimator slow = new PositionEstimator();
@@ -436,12 +426,10 @@ public final class ObdTests {
         north.fix(lat0, lon0, 10, 0, 0, 0);
         check("due north raises latitude", Math.abs(Router.meters(lat0, lon0, north.at(2000)[0], north.at(2000)[1]) - 20) < 0.3
                 && north.at(2000)[0] > lat0);
-        // A fix that is already old (taken 500 ms ago) is projected from when it was taken.
         PositionEstimator old = new PositionEstimator();
         old.fix(lat0, lon0, 20, 90, 0, 500);
         check("an old fix is projected over its age", Math.abs(Router.meters(lat0, lon0, old.at(500)[0], old.at(500)[1]) - 10) < 0.3);
 
-        // ---- what comes after the next step ----
         java.util.List<RouteTrack.StepSpec> twoSteps = new java.util.ArrayList<>();
         for (double metres : new double[]{300, 500}) {
             RouteTrack.StepSpec given2 = new RouteTrack.StepSpec();
@@ -457,7 +445,7 @@ public final class ObdTests {
         check("the gap between them", Math.abs(chain.metersBetweenNextAndAfter() - 200) < 1);
         check("distance counts down with extra travel", Math.abs(chain.metersToNext(40) - (chain.metersToNext() - 40)) < 0.01
                 && chain.metersToNext(10_000) == 0);
-        move(chain, 400 - 100, 0, 1000); // already past the first turn's position at 300? no: still before it
+        move(chain, 400 - 100, 0, 1000);
         move(chain, 350, 0, 2000);
         check("past the first turn the next is the second", chain.nextStep().atMeters == 500);
         check("after the last turn only the arrival follows", chain.stepAfterNext().kind == RouteTrack.ARRIVE);

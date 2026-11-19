@@ -6,27 +6,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 
-/**
- * The offline router: A* over the tiled graph from build_route_graph.py. Roads near either end are searched in full
- * detail; the middle of a long trip only sees main roads, so crossing a state reads a handful of big tiles.
- * Pure Java (tiles come in through {@link Tiles}), so it is tested on a desktop.
- */
 final class Router {
-    /** Where tiles come from; returns null when there is no tile there. */
     interface Tiles {
         RouteTile tile(int level, int x, int y);
     }
 
     static final double LOCAL_DEG = 0.25, HIGH_DEG = 1.0;
-    static final double DETAIL_METERS = 10_000;     // full detail within this distance of either end
-    static final double ALL_DETAIL_METERS = 40_000; // trips shorter than this never leave full detail
-    static final double FAR_TRIP_METERS = 120_000;  // beyond this, away from the ends, only classes up to FAR_CLASS
+    static final double DETAIL_METERS = 10_000;
+    static final double ALL_DETAIL_METERS = 40_000;
+    static final double FAR_TRIP_METERS = 120_000;
     static final int FAR_CLASS = 2;
     static final double FASTEST_METERS_PER_SECOND = 30.0;
     static final int MAX_NODES = 4_000_000;
     private static final double INF = Double.POSITIVE_INFINITY;
 
-    /** The outcome of one search: a line, its manoeuvres, and totals; or an error message. */
     static final class Result {
         String error;
         double[] lat, lon;
@@ -39,9 +32,9 @@ final class Router {
         final int lat, lon;
         double g = INF;
         Node parent;
-        RouteTile tile;   // the edge that reached this node
+        RouteTile tile;
         int edge;
-        int arrive;       // bearing byte at arrival
+        int arrive;
         boolean closed;
 
         Node(long id, int lat, int lon) {
@@ -62,7 +55,6 @@ final class Router {
         }
     }
 
-    /** A place on a directed edge: the road under a start or destination. */
     private static final class Snap {
         RouteTile tile;
         int edge;
@@ -86,9 +78,6 @@ final class Router {
         this.tiles = tiles;
     }
 
-    // ---- public entry ----
-
-    /** Route between two points. {@code heading} (degrees, NaN if unknown) picks the right side of a two-way road. */
     Result route(double fromLat, double fromLon, double heading, double toLat, double toLon) {
         Result result = new Result();
         nodes.clear();
@@ -175,8 +164,6 @@ final class Router {
         return result;
     }
 
-    // ---- the graph ----
-
     private Node node(long id, int lat, int lon) {
         Node node = nodes.get(id);
         if (node == null) {
@@ -200,13 +187,10 @@ final class Router {
         return Math.hypot(dx, dy);
     }
 
-    /** Degrees of turn, positive to the right, between two 0-255 bearing bytes. */
     static double signedTurn(int in, int out) {
         double delta = (((out - in) * 360.0 / 256.0) % 360.0 + 360.0) % 360.0;
         return delta > 180 ? delta - 360 : delta;
     }
-
-    // ---- finding the road under a point ----
 
     private double[][] polyline(RouteTile tile, int edge) {
         int start = tile.startNodeOf(edge);
@@ -255,7 +239,6 @@ final class Router {
         return close;
     }
 
-    /** A cheap test that an edge's box touches the search box around a point. */
     private static boolean near(RouteTile tile, int node, int edge, double lat, double lon, double box) {
         double minLat = Math.min(tile.lat[node], tile.targetLat[edge]), maxLat = Math.max(tile.lat[node], tile.targetLat[edge]);
         double minLon = Math.min(tile.lon[node], tile.targetLon[edge]), maxLon = Math.max(tile.lon[node], tile.targetLon[edge]);
@@ -303,12 +286,9 @@ final class Router {
         return snap;
     }
 
-    // ---- turning the path into a line and steps ----
-
     private void build(Result result, List<Snap> starts, Node end, Snap goal, double total) {
         List<Node> chain = new ArrayList<>();
         for (Node n = end; n != null; n = n.parent) chain.add(0, n);
-        // The snap edge the first node was reached along is a start snap.
         Snap start = null;
         for (Snap s : starts) {
             if (s.tile == chain.get(0).tile && s.edge == chain.get(0).edge) start = s;
@@ -350,7 +330,6 @@ final class Router {
         steps(result.steps, refs, ends);
     }
 
-    /** Index of the first polyline point after a snap's projection. */
     private static int segmentAfter(double[][] line, Snap snap) {
         double metersPerLon = 111_320 * Math.cos(Math.toRadians(snap.projLat));
         double total = 0;
@@ -409,12 +388,11 @@ final class Router {
             spec.atMeters = at;
             String[] ramp = exit ? tb.exitOf(b) : null;
             if (ramp != null) spec.instruction = exitInstruction(ramp[0], ramp[1]);
-            if (exit && size < 20) spec.modifier = turn >= 0 ? "slight right" : "slight left"; // an exit never points straight on
+            if (exit && size < 20) spec.modifier = turn >= 0 ? "slight right" : "slight left";
             out.add(spec);
         }
     }
 
-    /** "Take exit 24 toward I 90 W", built from whatever the ramp's signs give. */
     static String exitInstruction(String number, String toward) {
         String text = number.isEmpty() ? "Take the exit" : "Take exit " + number;
         return toward.isEmpty() ? text : text + " toward " + toward;

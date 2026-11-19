@@ -5,11 +5,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Queue for short status messages shown as a banner. Higher levels jump the queue and cut off lower
- * ones, repeats of the same text are ignored for a while, and an alert only starts its timer once it
- * is actually on screen (so nothing expires unseen behind the start animation).
- */
 final class Alerts {
     static final int INFO = 0;
     static final int WARN = 1;
@@ -24,7 +19,7 @@ final class Alerts {
         final int level;
         final boolean silent;
         final long raisedAt;
-        long shownAt; // 0 until it first appears
+        long shownAt;
 
         Alert(String text, int level, long raisedAt, boolean silent) {
             this.text = text;
@@ -40,28 +35,21 @@ final class Alerts {
     private boolean started;
     private long lastTick;
 
-    /** Returns false when the same text was raised recently and is being ignored. */
     boolean raise(String text, int level, long now) {
         return raise(text, level, now, false);
     }
 
-    /** A silent alert shows its banner but makes no sound. */
     boolean raise(String text, int level, long now, boolean silent) {
         Long last = lastRaised.get(text);
         if (last != null && now - last < REPEAT_BLOCK_MS) return false;
         lastRaised.put(text, now);
         Alert alert = new Alert(text, level, now, silent);
-        if (current != null && level > current.level) current = null; // a worse problem cuts in
+        if (current != null && level > current.level) current = null;
         waiting.add(alert);
         return true;
     }
 
-    /**
-     * Advances the queue and returns what should be on screen, or null. While {@code held} (another
-     * full-screen state owns the display) nothing new starts and the clock for the current one waits.
-     */
     Alert tick(long now, boolean held) {
-        // While another screen owns the display, an alert that was already showing waits with its time paused.
         if (held && current != null && current.shownAt != 0 && lastTick != 0) current.shownAt += now - lastTick;
         lastTick = now;
         if (current != null && current.shownAt != 0 && now - current.shownAt >= DURATION_MS[current.level]) {
@@ -86,7 +74,6 @@ final class Alerts {
         return held || current == null ? null : current;
     }
 
-    /** True once, right after an alert first appeared (use it to play its sound). */
     boolean justStarted() {
         return started;
     }
@@ -95,7 +82,6 @@ final class Alerts {
         return current != null || !waiting.isEmpty();
     }
 
-    /** Lets the same text be raised again immediately (used by the test hook and on a new trip). */
     void forget() {
         lastRaised.clear();
     }

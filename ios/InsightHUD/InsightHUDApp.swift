@@ -506,8 +506,6 @@ private struct SavedPlaceEditor: View {
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 }
 
-/// A private copy of the HUD's trips and drives, so they can be viewed without the HUD connected. It lives in the
-/// app's own Application Support folder, is encrypted whenever the iPhone is locked, and is left out of backups.
 enum HUDCache {
     static let tripsFile = "trips.json", drivesFile = "drives.json"
 
@@ -774,8 +772,6 @@ private struct DriveMapView: View {
         }
     }
 
-    /// Syncs with the HUD when it is reachable: drives already saved are kept, and only new ones (plus the
-    /// newest, which may still have been growing) are downloaded. Without the HUD the saved drives stay on screen.
     private func load() async {
         guard progress == nil else { return }
         progress = 0

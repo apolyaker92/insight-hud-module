@@ -211,8 +211,6 @@ final class HUDDiscovery: NSObject, @preconcurrency NetServiceBrowserDelegate, @
     private var addresses: [String] = []
     private var pending: CheckedContinuation<[String], Never>?
 
-    /// Bonjour and a direct sweep of the Wi-Fi subnet run together: an Android hotspot often does not carry mDNS,
-    /// but the HUD's server always answers a plain GET / on its port.
     func find() async -> [String] {
         async let bonjour = browse()
         async let swept = HUDProbe.sweep()
@@ -241,7 +239,6 @@ final class HUDDiscovery: NSObject, @preconcurrency NetServiceBrowserDelegate, @
 
     func netServiceDidResolveAddress(_ sender: NetService) {
         guard sender.port > 0 else { return }
-        // Prefer the resolved IPv4 address: the .local host name needs working mDNS to look up again.
         var host = HUDProbe.ipv4(in: sender.addresses ?? [])
         if host == nil, let name = sender.hostName { host = name.hasSuffix(".") ? String(name.dropLast()) : name }
         guard let host else { return }
@@ -263,7 +260,6 @@ private final class NoRedirects: NSObject, URLSessionTaskDelegate {
                     newRequest request: URLRequest) async -> URLRequest? { nil }
 }
 
-/// Finds the HUD by asking every address on the iPhone's Wi-Fi subnet for the HUD's greeting page.
 enum HUDProbe {
     static let port = 8765
 
@@ -305,7 +301,6 @@ enum HUDProbe {
         return "\(host):\(port)"
     }
 
-    /// Every other address on the Wi-Fi subnet (at most one /24), the router's .1 first.
     private static func candidateHosts() -> [String] {
         var list: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&list) == 0, let first = list else { return [] }
@@ -323,7 +318,7 @@ enum HUDProbe {
             let mask = netmask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
             var low = (ip & mask) + 1
             var high = (ip & mask | ~mask) - 1
-            if mask < 0xFFFFFF00 { // wider than a /24: stay on the iPhone's own /24
+            if mask < 0xFFFFFF00 {
                 low = (ip & 0xFFFFFF00) + 1
                 high = low + 253
             }

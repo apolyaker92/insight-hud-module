@@ -1,20 +1,15 @@
 package com.andrew.insighthud;
 
-/**
- * Where the car probably is between GPS fixes. Fixes arrive about once a second, which at highway speed is a jump of
- * 25-30 m on the map. This projects the last fix forward along its course at its speed, and when the next fix lands it
- * eases from where the marker was to the new projection instead of jumping. Pure arithmetic, so it is tested directly.
- */
 final class PositionEstimator {
-    static final double MIN_SPEED_MPS = 2.0;       // slower than this the car is treated as stopped
-    static final double MAX_PROJECT_SECONDS = 3.0;  // never project further than this past a fix
-    static final double SETTLE_SECONDS = 0.6;       // how long the marker takes to ease onto a new fix
-    static final double SNAP_METERS = 150;          // a bigger difference than this is a real jump: no easing
+    static final double MIN_SPEED_MPS = 2.0;
+    static final double MAX_PROJECT_SECONDS = 3.0;
+    static final double SETTLE_SECONDS = 0.6;
+    static final double SNAP_METERS = 150;
 
     private boolean has;
-    private double lat, lon, speed, course; // the latest fix; course in degrees, NaN when unknown
+    private double lat, lon, speed, course;
     private long fixMs;
-    private double easeNorth, easeEast;     // metres still to ease out, measured at easeFrom
+    private double easeNorth, easeEast;
     private long easeFrom;
 
     void clear() {
@@ -25,7 +20,6 @@ final class PositionEstimator {
         return has;
     }
 
-    /** Takes a new fix. Times are on one clock (elapsed-realtime milliseconds); fixMs is when the fix was taken. */
     void fix(double latitude, double longitude, double speedMps, double courseDegrees, long fixMs, long nowMs) {
         double shownLat = 0, shownLon = 0;
         boolean wasShowing = has;
@@ -53,7 +47,6 @@ final class PositionEstimator {
         }
     }
 
-    /** The estimated position {lat, lon} at a time, or null before the first fix. */
     double[] at(long nowMs) {
         if (!has) return null;
         double[] p = project(nowMs);
@@ -65,7 +58,6 @@ final class PositionEstimator {
         return p;
     }
 
-    /** True while the position is still being projected forward, so the screen should keep redrawing. */
     boolean moving(long nowMs) {
         return has && speed >= MIN_SPEED_MPS && !Double.isNaN(course)
                 && (nowMs - fixMs) / 1000.0 < MAX_PROJECT_SECONDS + SETTLE_SECONDS;

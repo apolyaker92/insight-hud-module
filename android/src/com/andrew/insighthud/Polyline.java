@@ -1,13 +1,8 @@
 package com.andrew.insighthud;
 
-/** Decodes the encoded-polyline format that Google, OSRM, Valhalla and OpenRouteService all use for route lines. */
 final class Polyline {
     private Polyline() { }
 
-    /**
-     * Returns {latitudes, longitudes}. {@code precision} is 5 for the classic format and 6 for the finer one.
-     * Malformed trailing data is ignored rather than thrown on.
-     */
     static double[][] decode(String encoded, int precision) {
         double scale = Math.pow(10, precision);
         int length = encoded == null ? 0 : encoded.length();
@@ -35,7 +30,6 @@ final class Polyline {
         return new double[][]{trimmedLat, trimmedLon};
     }
 
-    /** One zig-zag varint starting at {@code index}: {value, next index}, or null when the data runs out. */
     private static long[] next(String encoded, int index) {
         long result = 0;
         int shift = 0;

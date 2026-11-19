@@ -22,7 +22,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
-/** Classic Bluetooth SPP transport for ELM327 adapters and the ZE1 ISO 9141-2 profile. */
 final class ObdBluetooth {
     private static final UUID SERIAL_PORT = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
     private final BluetoothAdapter adapter;
@@ -47,7 +46,6 @@ final class ObdBluetooth {
         final Double voltage;
         final Double load;
         final Double throttle;
-        /** Estimated fuel flow in gallons per hour, and the estimated MPG derived from it. */
         final Double fuelGph;
         final Double mpg;
 
@@ -68,7 +66,6 @@ final class ObdBluetooth {
             this.load = load;
         }
 
-        /** The same readings with the speed replaced (used when the speed comes from GPS). */
         Readings withSpeed(Double mph) {
             return new Readings(mph, rpm, coolantF, intakeF, voltage, load, throttle, fuelGph, mpg);
         }
@@ -96,15 +93,13 @@ final class ObdBluetooth {
         this.listener = listener;
     }
 
-    /** Bluetooth is being switched on by the HUD itself: until this time, off means "starting", not "off". */
     private volatile long expectedUntil;
     private long lastNudgeAt;
-    /** Called on the main thread when Bluetooth is off and not already starting, so the owner can switch it on. */
     volatile Runnable whenBluetoothOff;
 
     void expectBluetooth(long milliseconds) {
         expectedUntil = SystemClock.elapsedRealtime() + milliseconds;
-        lastNudgeAt = SystemClock.elapsedRealtime(); // the request just made gets a few seconds before a retry
+        lastNudgeAt = SystemClock.elapsedRealtime();
     }
 
     void start(String address) {
@@ -114,12 +109,10 @@ final class ObdBluetooth {
         job = worker.submit(() -> run(session));
     }
 
-    /** Queues read-only raw requests (already validated by the caller); results go to logcat. */
     void probe(String[] requests) {
         pendingProbe = requests;
     }
 
-    /** True while a session for this adapter address is active (connecting, linked or retrying). */
     boolean isRunning(String address) {
         Session session = current;
         return session != null && !session.cancelled && session.address.equals(address)
@@ -142,7 +135,6 @@ final class ObdBluetooth {
         timer.shutdownNow();
     }
 
-    /** Closes the socket after the delay; a destroyed transport ends the session instead of throwing. */
     private ScheduledFuture<?> schedule(Session session, long delayMs) throws InterruptedException {
         try {
             return timer.schedule(session::closeSocket, delayMs, TimeUnit.MILLISECONDS);
@@ -165,11 +157,10 @@ final class ObdBluetooth {
                     long now = SystemClock.elapsedRealtime();
                     boolean turningOn = adapter.getState() == BluetoothAdapter.STATE_TURNING_ON;
                     if (!turningOn && now - lastNudgeAt >= 3000) {
-                        lastNudgeAt = now; // a request made while it was still switching off can be dropped
+                        lastNudgeAt = now;
                         Runnable nudge = whenBluetoothOff;
                         if (nudge != null) main.post(nudge);
                     }
-                    // Right after ignition the HUD has just asked for Bluetooth: say so rather than "off".
                     publish(session, turningOn || now < expectedUntil ? "BT STARTING" : "BLUETOOTH OFF", null);
                     Thread.sleep(turningOn || now < expectedUntil ? 400 : 1000);
                     continue;
@@ -238,8 +229,6 @@ final class ObdBluetooth {
         boolean throttleSupported = ObdProtocol.supports(supported, 0x11);
         boolean hasInputs = speedSupported || rpmSupported || ObdProtocol.supports(supported, 5)
                 || ObdProtocol.supports(supported, 15) || ObdProtocol.supports(supported, 4) || throttleSupported;
-        // The car's link only manages a few requests a second, so rpm and speed go out every pass, throttle and
-        // load every MEDIUM_EVERY passes, and the slow-moving readings only every SLOW_EVERY_MS.
         Double coolant = null, intake = null, voltage = null, load = null, throttle = null;
         long slowDueAt = 0, windowStart = SystemClock.elapsedRealtime();
         int passes = 0, sinceMedium = MEDIUM_EVERY;
@@ -289,13 +278,11 @@ final class ObdBluetooth {
                 passes = 0;
                 windowStart = now;
             }
-            // The adapter normally paces this loop; the floor only stops an instant (simulated) one spinning.
             long spare = MIN_PASS_MS - (now - passStart);
             if (spare > 0) Thread.sleep(spare);
         }
     }
 
-    /** The protocol the ECU last answered on; tried first on reconnects. */
     private volatile String workingProtocol;
     private static final long SLOW_EVERY_MS = 10_000;
     private static final int MEDIUM_EVERY = 4;
