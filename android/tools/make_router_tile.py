@@ -1,5 +1,5 @@
 """Writes test/com/andrew/insighthud/RouterTestData.java: a 4x4 street grid as one routing tile, built with the real
-encoder so the Java decoder is checked against it. Run from the android directory: python test/make_router_tile.py
+encoder so the Java decoder is checked against it. Run: python android/tools/make_router_tile.py
 
 Nodes are numbered 100 + row * 4 + col; rows run north, columns east, 0.001 degrees apart (about 111 m / 82 m).
 Streets: "Row 0".."Row 3" run east-west, "Col 0".."Col 3" north-south. Col 3 is one-way northbound.
@@ -8,10 +8,8 @@ No left turn from Col 1 into Row 2 heading north (node 109 -> 113 is banned afte
 import base64
 import math
 import pathlib
-import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-from build_route_graph import bearing_byte, encode_tile  # noqa: E402
+from build_route_graph import bearing_byte, encode_tile
 
 LAT0, LON0, STEP = 420_010_000, -729_990_000, 10_000  # 42.001, -72.999, 0.001 degrees
 
@@ -48,7 +46,7 @@ edges.append(edge((3, 1), (4, 1), "24I 90 W", cls=0, flags=1))
 # No going straight north on Col 0 through (2,0) when arriving from (1,0).
 BAN = {(node(1, 0), node(2, 0), node(3, 0))}
 blob = encode_tile(edges, BAN)
-out = pathlib.Path(__file__).parent / "com" / "andrew" / "insighthud" / "RouterTestData.java"
+out = pathlib.Path(__file__).resolve().parent.parent / "test" / "com" / "andrew" / "insighthud" / "RouterTestData.java"
 encoded = base64.b64encode(blob).decode()
 chunks = [encoded[i:i + 100] for i in range(0, len(encoded), 100)]
 body = "\n".join(f'        + "{chunk}"' for chunk in chunks)

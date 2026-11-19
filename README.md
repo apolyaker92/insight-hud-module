@@ -2,6 +2,18 @@
 
 An Android HUD for a 2001 Honda Insight (ZE1), built for an Essential PH-1 running LineageOS. The display features segmented MPH, a rolling RPM trace, and gauges for coolant temperature, intake air temperature, OBD voltage, and engine load.
 
+## Repository layout
+
+| Path | What's in it |
+| :--- | :--- |
+| `android/src/` | The HUD app (Java, no Gradle) |
+| `android/res/` | Resources, sounds and the bundled Albany road database |
+| `android/test/` | Plain-Java checks, run with `sh android/test/run-tests.sh` on any OS |
+| `android/tools/` | Python tools that build and merge the road and routing databases, and their tests |
+| `android/system/` | Script that installs the HUD as a privileged system app |
+| `ios/` | The SwiftUI companion app |
+| `mount/` | The phone cradle (OpenSCAD source and a print plate) |
+
 ## In the car
 
 - Set Insight HUD as the phone's default Home app.
@@ -18,7 +30,7 @@ On power-up the HUD plays its startup animation and chime and reconnects to the 
 
 ## Build the Android app
 
-Run `./android/build.ps1 -SdkDirectory <path> -BuildDirectory ./work/hud-build` from the repository root in PowerShell with a JDK on PATH. The script expects Android 35's `android.jar` under `android-35` and the Windows build tools, including `lib/d8.jar` and `lib/apksigner.jar`, under `android-15` in that SDK directory. It creates a local development signing key if one is missing. Keep the same signing key for in-place updates.
+The build script is Windows-only. Run `./android/build.ps1 -SdkDirectory <path> -BuildDirectory ./work/hud-build` from the repository root in PowerShell with a JDK on PATH. The script expects Android 35's `android.jar` under `android-35` and the Windows build tools, including `lib/d8.jar` and `lib/apksigner.jar`, under `android-15` in that SDK directory. It creates a local development signing key if one is missing. Keep the same signing key for in-place updates.
 
 ## Gauges and testing without a car
 
@@ -48,7 +60,7 @@ The app checks the saved connection when it becomes active and requests brief ba
 
 `POST /destination` with `{"lat":..,"lon":..,"name":".."}` makes the HUD work out the route itself from its GPS fix, with no internet, using `hud-route.db` in the app's files folder (`/sdcard/Android/data/com.andrew.insighthud/files/`). It reroutes on its own (about 8 seconds after leaving the route) and shows REROUTING. A 25 km Albany trip is found in about a second.
 
-The graph comes from an OpenStreetMap extract: `python android/build_route_graph.py OUT.db SRC.pbf --name NAME --bounds S W N E` (needs `pyosmium` and `numpy`). Edges carry travel times from posted or default speeds plus signal and stop delays, one-ways, and turn restrictions; the router adds turn penalties. Short trips search every road; long ones only main roads away from either end. The tile format is documented at the top of `build_route_graph.py`; `android/test/make_router_tile.py` writes the small grid the router tests use.
+The graph comes from an OpenStreetMap extract: `python android/tools/build_route_graph.py OUT.db SRC.pbf --name NAME --bounds S W N E` (needs `pyosmium` and `numpy`). Edges carry travel times from posted or default speeds plus signal and stop delays, one-ways, and turn restrictions; the router adds turn penalties. Short trips search every road; long ones only main roads away from either end. The tile format is documented at the top of `build_route_graph.py`; `android/test/make_router_tile.py` writes the small grid the router tests use.
 
 Android's per-app firewall must allow the HUD network access (Settings > Apps > Insight HUD > Wi-Fi data usage > Allow network access), and the HUD must be the foreground app to receive routes. The receiver listens on every network interface, so keep it on a network you trust; the pairing code is the only protection.
 
@@ -60,11 +72,11 @@ The East Coast pack covers the 14 Atlantic coastal states from Maine through Flo
 
 The whole US can be packed the same way: run `pack_detail.py` once per state PBF (`--bounds -90 -180 90 180`), then merge the state packs with `python pack_pbf_roads.py hud-roads.db --merge --name "UNITED STATES" --center 42.607 -73.700 *.db`. The 50 states plus DC come to about 4 GB, with street names, rail and water everywhere, and replace the East Coast pack as `hud-roads.db`.
 
-For more detail around home, `android/pack_detail.py` builds a local pack from one PBF and a bounding box: street names on every road, rail lines (dotted) and rivers, canals and larger lakes (dashed). Run `python pack_detail.py hud-local.db new-york.osm.pbf --name "CAPITAL DISTRICT" --bounds 42.2 -74.7 43.4 -73.1` (south west north east), then copy `hud-local.db` into the same external files directory as `hud-roads.db`. Inside its bounds the HUD draws from the local pack; outside, it falls back to the wide pack. The 13 MB Capital District pack covers Albany, Schenectady, Troy, Saratoga and the Hudson valley south to Catskill.
+For more detail around home, `android/tools/pack_detail.py` builds a local pack from one PBF and a bounding box: street names on every road, rail lines (dotted) and rivers, canals and larger lakes (dashed). Run `python pack_detail.py hud-local.db new-york.osm.pbf --name "CAPITAL DISTRICT" --bounds 42.2 -74.7 43.4 -73.1` (south west north east), then copy `hud-local.db` into the same external files directory as `hud-roads.db`. Inside its bounds the HUD draws from the local pack; outside, it falls back to the wide pack. The 13 MB Capital District pack covers Albany, Schenectady, Troy, Saratoga and the Hudson valley south to Catskill.
 
-Use `android/pack_pbf_roads.py` with Pyosmium to convert one [Geofabrik PBF extract](https://download.geofabrik.de/north-america/us.html) at a time. Run it again with `--merge` and the converted databases to build a combined road pack. Pass `--name` and choose a default view with `--center LAT LON`.
+Use `android/tools/pack_pbf_roads.py` with Pyosmium to convert one [Geofabrik PBF extract](https://download.geofabrik.de/north-america/us.html) at a time. Run it again with `--merge` and the converted databases to build a combined road pack. Pass `--name` and choose a default view with `--center LAT LON`.
 
-Use `android/pack_roads.py` to turn an Overpass JSON road export with `out geom` into an indexed road database. Pass `--bounds S W N E --center LAT LON --name NAME`. When bundling a new database in the APK, update the copied database filename in `OfflineRoadMap.java` so existing installs pick up the new pack.
+Use `android/tools/pack_roads.py` to turn an Overpass JSON road export with `out geom` into an indexed road database. Pass `--bounds S W N E --center LAT LON --name NAME`. When bundling a new database in the APK, update the copied database filename in `OfflineRoadMap.java` so existing installs pick up the new pack.
 
 ## Print the cradle
 
