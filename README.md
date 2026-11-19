@@ -12,7 +12,7 @@ An Android HUD for a 2001 Honda Insight (ZE1), built for an Essential PH-1 runni
 | `android/tools/` | Python tools that build and merge the road and routing databases, and their tests |
 | `android/system/` | Script that installs the HUD as a privileged system app |
 | `ios/` | The SwiftUI companion app |
-| `mount/` | The phone cradle (OpenSCAD source and a print plate) |
+| `mount/` | The phone mount (OpenSCAD source and one STL per printed part) |
 
 ## In the car
 
@@ -80,6 +80,6 @@ Use `android/tools/pack_pbf_roads.py` with Pyosmium to convert one [Geofabrik PB
 
 Use `android/tools/pack_roads.py` to turn an Overpass JSON road export with `out geom` into an indexed road database. Pass `--bounds S W N E --center LAT LON --name NAME`. When bundling a new database in the APK, update the copied database filename in `OfflineRoadMap.java` so existing installs pick up the new pack.
 
-## Print the cradle
+## Print the mount
 
-Open `mount/ph1_cradle_complete_plate.stl` in Bambu Studio. The plate has the cradle and both keepers. Assembly uses two M3 × 8 mm screws and two M3 hex nuts. Edit the dimensions or export individual parts from `mount/ph1_cradle.scad` in OpenSCAD.
+The mount has four printed parts, each exported flat and ready to slice: `mount/ph1_dock.stl` (sits on the dash, with an 8 mm taper in its sole to match the slope), `ph1_slider.stl`, `ph1_tray.stl` and `ph1_frame.stl`. The tray holds the phone, the frame screws over it, and the tray rides on the slider, which slides into the dock. Everything is parametric in `mount/ph1_mount.scad` (open it in OpenSCAD and pick a `part`), starting with the phone's size, so another phone is a few numbers. The phone leans back 15 degrees.
