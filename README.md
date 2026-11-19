@@ -30,7 +30,9 @@ On power-up the HUD plays its startup animation and chime and reconnects to the 
 
 ## Build the Android app
 
-The build script is Windows-only. Run `./android/build.ps1 -SdkDirectory <path> -BuildDirectory ./work/hud-build` from the repository root in PowerShell with a JDK on PATH. The script expects Android 35's `android.jar` under `android-35` and the Windows build tools, including `lib/d8.jar` and `lib/apksigner.jar`, under `android-15` in that SDK directory. It creates a local development signing key if one is missing. Keep the same signing key for in-place updates.
+On Windows, run `./android/build.ps1 -SdkDirectory <path> -BuildDirectory ./work/hud-build` from the repository root in PowerShell with a JDK on PATH. The script expects Android 35's `android.jar` under `android-35` and the Windows build tools, including `lib/d8.jar` and `lib/apksigner.jar`, under `android-15` in that SDK directory. It creates a local development signing key if one is missing. Keep the same signing key for in-place updates.
+
+On macOS or Linux, run `sh android/build.sh <sdk-dir> [platform] [keystore]` instead. It does the same steps with the SDK's build tools and writes `android/insight-hud.apk`.
 
 ## Gauges and testing without a car
 
