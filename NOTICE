@@ -1,0 +1,10 @@
+Insight HUD
+
+The code, the mount designs and the other original files in this repository
+are dedicated to the public domain under CC0 1.0 (see LICENSE).
+
+The road database bundled in the app (android/res/raw/albany_roads.db), and
+any road or routing database built with the tools in android/tools, is derived
+from OpenStreetMap data and is not covered by CC0. It is © OpenStreetMap
+contributors and available under the Open Database License (ODbL) 1.0:
+https://www.openstreetmap.org/copyright

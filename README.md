@@ -86,4 +86,4 @@ The mount has four printed parts, each exported flat and ready to slice: `mount/
 
 ## License
 
-[CC0 1.0](LICENSE): public domain, use it however you like. The bundled road data is from [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) under the ODbL.
+[CC0 1.0](LICENSE): public domain, use it however you like. The bundled road data is the exception: it is © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) under the ODbL. See [NOTICE](NOTICE).
