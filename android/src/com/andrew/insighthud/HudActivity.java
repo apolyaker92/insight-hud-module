@@ -53,7 +53,7 @@ public final class HudActivity extends Activity {
     volatile boolean mirror;
     boolean demo;
     volatile boolean mapPreview;
-    private volatile boolean fullMap;
+    volatile boolean fullMap;
     int mapReadout;
     private static final String[] READOUT_NAMES = {"FULL", "SPEED", "OFF"};
     static final String[] PALETTE_NAMES = {"GREEN", "AMBER", "BLUE"};
@@ -64,12 +64,10 @@ public final class HudActivity extends Activity {
     private long overSince, lastOverAlertAt;
     private DriveLog driveLog;
 
-    private static final int NAV_PORT = 8765;
     RouteTrack nav;
     double[] navTileX, navTileY;
     int navVersion;
-    private NavServer navServer;
-    private boolean navEnabled = true;
+    boolean navEnabled = true;
     private long navArrivedAt;
     private boolean offRouteAnnounced;
     private RouteDatabase routeDb;
@@ -99,6 +97,7 @@ public final class HudActivity extends Activity {
         else openQuick();
     };
     private final KeyboardBattery keyboards = new KeyboardBattery(this);
+    private final NavService navService = new NavService(this);
     private final Runnable quickIdle = this::closeQuick;
     private final Runnable quickTick = new Runnable() {
         @Override public void run() {
@@ -109,144 +108,10 @@ public final class HudActivity extends Activity {
         }
     };
 
-    private String navToken() {
-        String token = preferences.getString("navToken", null);
-        if (token == null) token = newNavToken();
-        return token;
-    }
 
-    private android.net.nsd.NsdManager.RegistrationListener navAdvertisement;
 
-    private void advertiseNavigation() {
-        android.net.nsd.NsdManager manager = getSystemService(android.net.nsd.NsdManager.class);
-        if (manager == null) return;
-        android.net.nsd.NsdServiceInfo service = new android.net.nsd.NsdServiceInfo();
-        service.setServiceName("Insight HUD");
-        service.setServiceType("_insighthud._tcp.");
-        service.setPort(NAV_PORT);
-        navAdvertisement = new android.net.nsd.NsdManager.RegistrationListener() {
-            @Override public void onServiceRegistered(android.net.nsd.NsdServiceInfo info) { }
-            @Override public void onServiceUnregistered(android.net.nsd.NsdServiceInfo info) { }
-            @Override public void onRegistrationFailed(android.net.nsd.NsdServiceInfo info, int error) {
-                android.util.Log.w("HudNav", "Bonjour registration failed: " + error);
-            }
-            @Override public void onUnregistrationFailed(android.net.nsd.NsdServiceInfo info, int error) {
-                android.util.Log.w("HudNav", "Bonjour unregistration failed: " + error);
-            }
-        };
-        manager.registerService(service, android.net.nsd.NsdManager.PROTOCOL_DNS_SD, navAdvertisement);
-    }
 
-    private String newNavToken() {
-        byte[] bytes = new byte[4];
-        new java.security.SecureRandom().nextBytes(bytes);
-        StringBuilder token = new StringBuilder();
-        for (byte b : bytes) token.append(String.format(Locale.US, "%02x", b & 0xff));
-        preferences.edit().putString("navToken", token.toString()).apply();
-        return token.toString();
-    }
 
-    private void startNavServer() {
-        if (!navEnabled || navServer != null) return;
-        navServer = new NavServer(NAV_PORT, this::navToken, new NavServer.Handler() {
-            @Override public String status() {
-                JSONObject json = new JSONObject();
-                try {
-                    RouteTrack route = nav;
-                    json.put("app", "insight-hud").put("navigating", route != null);
-                    if (route != null) {
-                        RouteTrack.Step next = route.nextStep();
-                        json.put("destination", route.name).put("remaining_m", Math.round(route.remainingMeters()))
-                                .put("next", next == null ? "ARRIVE" : next.label())
-                                .put("next_m", Math.round(route.metersToNext()))
-                                .put("off_route", route.offRoute(SystemClock.uptimeMillis()))
-                                .put("arrived", route.arrived());
-                    }
-                    json.put("gps_fix", gpsFix != null);
-                    json.put("view", !mapPreview ? "gauges" : fullMap ? "full" : "split");
-                    json.put("mirror", mirror);
-                    json.put("brightness", brightnessMode);
-                    json.put("saved_places", savedPlaces());
-                } catch (JSONException impossible) {
-                    // Only a null key could throw here.
-                }
-                return json.toString();
-            }
-
-            @Override public String route(JSONObject body, int precision) {
-                RouteTrack track;
-                try {
-                    track = RouteParser.parse(body, precision, "DESTINATION");
-                } catch (IllegalArgumentException bad) {
-                    return bad.getMessage();
-                }
-                main.post(() -> startRoute(track));
-                return null;
-            }
-
-            @Override public String destination(JSONObject body) {
-                double lat = body.optDouble("lat", Double.NaN), lon = body.optDouble("lon", Double.NaN);
-                if (Double.isNaN(lat) || Double.isNaN(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
-                    return "A destination needs lat and lon";
-                }
-                return routeTo(lat, lon, body.optString("name", ""), false);
-            }
-
-            @Override public void cancel() {
-                main.post(HudActivity.this::cancelRoute);
-            }
-
-            @Override public String trips() {
-                return "{\"trips\":" + tripHistory() + "}";
-            }
-
-            @Override public String tracks(String id) {
-                java.io.File external = getExternalFilesDir(null);
-                return DriveLog.trackJson(external == null ? null : new java.io.File(external, "logs"), id);
-            }
-
-            @Override public String settings(JSONObject body) {
-                Object view = body.opt("view");
-                Object mirrored = body.opt("mirror");
-                Object brightness = body.opt("brightness");
-                JSONArray places = body.optJSONArray("saved_places");
-                if (body.has("saved_places")) {
-                    if (body.length() != 1 || places == null) return "Saved places must be a list";
-                    for (int i = 0; i < places.length(); i++) {
-                        JSONObject place = places.optJSONObject(i);
-                        if (place == null || !(place.opt("name") instanceof String)
-                                || place.optString("name").trim().isEmpty() || place.optString("name").length() > 80
-                                || !(place.opt("lat") instanceof Number) || !(place.opt("lon") instanceof Number)
-                                || Math.abs(place.optDouble("lat")) > 90 || Math.abs(place.optDouble("lon")) > 180) {
-                            return "Each saved place needs a name and valid coordinates";
-                        }
-                    }
-                    preferences.edit().putString("savedPlaces", places.toString()).apply();
-                    main.post(() -> hud.invalidate());
-                    return null;
-                }
-                if (body.has("view") && !"gauges".equals(view) && !"split".equals(view) && !"full".equals(view)) {
-                    return "View must be gauges, split or full";
-                }
-                if (body.has("mirror") && !(mirrored instanceof Boolean)) return "Mirror must be a boolean";
-                if (body.has("brightness") && (!(brightness instanceof Integer)
-                        || (int) brightness < 0 || (int) brightness >= BRIGHTNESS_NAMES.length)) {
-                    return "Brightness must be an integer from 0 to 3";
-                }
-                if (body.length() != (view == null ? 0 : 1) + (mirrored == null ? 0 : 1)
-                        + (brightness == null ? 0 : 1) || body.length() == 0) return "Unknown or missing settings";
-                main.post(() -> {
-                    if (view != null) setHudView(!"gauges".equals(view), "full".equals(view));
-                    if (mirrored != null) setMirror((boolean) mirrored);
-                    if (brightness != null) setBrightnessMode((int) brightness);
-                    hud.invalidate();
-                });
-                return null;
-            }
-        });
-        navServer.start();
-        advertiseNavigation();
-    }
 
     private synchronized RouteDatabase routeDatabase() {
         if (routeDb == null && !routeDbTried) {
@@ -257,7 +122,7 @@ public final class HudActivity extends Activity {
         return routeDb;
     }
 
-    private synchronized String routeTo(double lat, double lon, String name, boolean reroute) {
+    synchronized String routeTo(double lat, double lon, String name, boolean reroute) {
         RouteDatabase graph = routeDatabase();
         if (graph == null) return "No routing data on the HUD (hud-route.db)";
         Location from = gpsFix;
@@ -293,13 +158,13 @@ public final class HudActivity extends Activity {
         return null;
     }
 
-    private void startRoute(RouteTrack track) {
+    void startRoute(RouteTrack track) {
         routeGeneration.incrementAndGet();
         navGoal = null;
         startRoute(track, true);
     }
 
-    private void startRoute(RouteTrack track, boolean announce) {
+    void startRoute(RouteTrack track, boolean announce) {
         clearResumeRoute();
         nav = track;
         navVersion++;
@@ -415,7 +280,7 @@ public final class HudActivity extends Activity {
                 if (!face.isUp() || face.isLoopback()) continue;
                 for (java.net.InetAddress address : java.util.Collections.list(face.getInetAddresses())) {
                     if (address instanceof java.net.Inet4Address) {
-                        out.append("http://").append(address.getHostAddress()).append(':').append(NAV_PORT)
+                        out.append("http://").append(address.getHostAddress()).append(':').append(navService.NAV_PORT)
                                 .append("   (").append(face.getName()).append(")\n");
                     }
                 }
@@ -430,12 +295,12 @@ public final class HudActivity extends Activity {
     private void showNavPairing() {
         new AlertDialog.Builder(this)
                 .setTitle("SEND ROUTES TO THE HUD")
-                .setMessage("Address:\n" + navAddresses() + "\nPairing code: " + navToken()
-                        + "\n\nSend it in an X-HUD-Token header, or add ?token=" + navToken() + " to the address."
+                .setMessage("Address:\n" + navAddresses() + "\nPairing code: " + navService.navToken()
+                        + "\n\nSend it in an X-HUD-Token header, or add ?token=" + navService.navToken() + " to the address."
                         + "\n\nPOST /route with a route, POST /cancel to stop, GET /status to check.")
                 .setPositiveButton("OK", null)
                 .setNegativeButton("NEW CODE", (dialog, which) -> {
-                    newNavToken();
+                    navService.newNavToken();
                     showNavPairing();
                 }).show();
     }
@@ -713,7 +578,7 @@ public final class HudActivity extends Activity {
         setContentView(hud);
         locationManager = getSystemService(LocationManager.class);
         navEnabled = preferences.getBoolean("navEnabled", true);
-        startNavServer();
+        navService.startNavServer();
         roadMap = new OfflineRoadMap(this, () -> {
             refreshMapTiles();
             hud.invalidate();
@@ -781,16 +646,7 @@ public final class HudActivity extends Activity {
         switchSounds = null;
         roadMap.close();
         if (driveLog != null) driveLog.close();
-        if (navServer != null) navServer.stop();
-        if (navAdvertisement != null) {
-            android.net.nsd.NsdManager manager = getSystemService(android.net.nsd.NsdManager.class);
-            try {
-                if (manager != null) manager.unregisterService(navAdvertisement);
-            } catch (IllegalArgumentException alreadyUnregistered) {
-                // Registration can fail before the activity is destroyed.
-            }
-            navAdvertisement = null;
-        }
+        navService.stop();
         routing.shutdownNow();
         main.removeCallbacks(f1Hold);
         if (routeDb != null) routeDb.close();
@@ -1030,7 +886,7 @@ public final class HudActivity extends Activity {
         return shutdownReport == null ? SHUTDOWN_DURATION_MS : TRIP_REPORT_MS;
     }
 
-    private JSONArray tripHistory() {
+    JSONArray tripHistory() {
         try {
             return new JSONArray(preferences.getString("tripLog", "[]"));
         } catch (JSONException invalid) {
@@ -1789,19 +1645,19 @@ public final class HudActivity extends Activity {
         }
     }
 
-    private void setMirror(boolean enabled) {
+    void setMirror(boolean enabled) {
         mirror = enabled;
         preferences.edit().putBoolean("mirror", mirror).apply();
     }
 
-    private void setBrightnessMode(int mode) {
+    void setBrightnessMode(int mode) {
         brightnessMode = mode;
         preferences.edit().putInt("brightnessMode", brightnessMode).apply();
         updateLightSensor();
         applyBrightness();
     }
 
-    private void setHudView(boolean map, boolean full) {
+    void setHudView(boolean map, boolean full) {
         if (map && !mapPreview) mapPreviewStartedAt = SystemClock.uptimeMillis();
         mapPreview = map;
         fullMap = full;
