@@ -83,3 +83,7 @@ Use `android/tools/pack_roads.py` to turn an Overpass JSON road export with `out
 ## Print the mount
 
 The mount has four printed parts, each exported flat and ready to slice: `mount/ph1_dock.stl` (sits on the dash, with an 8 mm taper in its sole to match the slope), `ph1_slider.stl`, `ph1_tray.stl` and `ph1_frame.stl`. The tray holds the phone, the frame screws over it, and the tray rides on the slider, which slides into the dock. Everything is parametric in `mount/ph1_mount.scad` (open it in OpenSCAD and pick a `part`), starting with the phone's size, so another phone is a few numbers. The phone leans back 15 degrees.
+
+## License
+
+[CC0 1.0](LICENSE): public domain, use it however you like. The bundled road data is from [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) under the ODbL.
